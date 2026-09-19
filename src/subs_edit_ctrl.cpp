@@ -94,6 +94,7 @@ SubsTextEditCtrl::SubsTextEditCtrl(wxWindow* parent, wxSize wsize, long style, a
 	SetMarginWidth(1,0);
 	UsePopUp(wxSTC_POPUP_NEVER);
 	SetStyles();
+	Bind(wxEVT_STC_CHARADDED, &SubsTextEditCtrl::OnCharAdded, this);
 
 	// Set hotkeys
 	CmdKeyClear(wxSTC_KEY_RETURN,wxSTC_KEYMOD_CTRL);
@@ -187,6 +188,28 @@ BEGIN_EVENT_TABLE(SubsTextEditCtrl,wxStyledTextCtrl)
 	EVT_MENU_RANGE(EDIT_MENU_DIC_LANGS,EDIT_MENU_THES_LANGUAGE-1,SubsTextEditCtrl::OnSetDicLanguage)
 	EVT_MENU_RANGE(EDIT_MENU_THES_LANGS,EDIT_MENU_THES_LANGS+LANGS_MAX,SubsTextEditCtrl::OnSetThesLanguage)
 END_EVENT_TABLE()
+
+
+void SubsTextEditCtrl::OnCharAdded(wxStyledTextEvent &event) {
+	event.Skip();
+	int pos=GetCurrentPos();
+	if(pos<3) return;
+	int start=pos;
+	while(start>0) {
+		int ch=GetCharAt(start-1);
+		if((ch>='A'&&ch<='Z')||(ch>='a'&&ch<='z')||(ch>='0'&&ch<='9')||ch=='\\') --start;
+		else break;
+	}
+	auto typed=GetTextRange(start,pos);
+	if(!typed.StartsWith("\\yt")) return;
+	static wxString const choices=
+		"\\ytchroma \\ytdir4 \\ytkt \\ytktFade \\ytktGlitch \\ytpack0 \\ytpack1 "
+		"\\ytruby \\ytruby2 \\ytruby8 \\ytshake \\ytsub \\ytsup \\ytsur "
+		"\\ytvert1 \\ytvert3 \\ytvert7 \\ytvert9";
+	AutoCompSetIgnoreCase(true);
+	AutoCompSetChooseSingle(false);
+	AutoCompShow(pos-start,choices);
+}
 
 void SubsTextEditCtrl::OnLoseFocus(wxFocusEvent &event) {
 	CallTipCancel();
