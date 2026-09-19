@@ -436,6 +436,8 @@ struct CollaborationController::Impl : wxEvtHandler {
         listener.reset(); room.reset(); mediaSends.clear(); peerPresence.clear();
         base=hostTransferDocument; revision=1; sequence=0; inFlight=false; connected=true; reconnecting=false;
         newHost.name=newHostName; newHost.role="Host"; newHost.authenticated=true; newHost.hello=true; newHost.ack=0;
+        wxIPV4address newHostAddress;
+        if(newHost.socket->GetPeer(newHostAddress)) {newHostAddress.Service(Port); guestAddress=newHostAddress;}
         hostTransferPending=false; hostTransferTarget.clear();
         people->SetLabel(Wx("Connected users (2)\n\n"+newHostName+" (Host)\n"+name+" (Editor)"));
         Notice(newHostName+" is now the room host."); Status("Connected - host transfer completed."); presenceDirty=true; Buttons();
