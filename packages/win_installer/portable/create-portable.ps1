@@ -26,7 +26,7 @@ function Copy-ToDirectory {
 
 # Keep in sync with the number of Write-Step calls below.
 $script:stepNum = 0
-$script:stepTotal = 12
+$script:stepTotal = 11
 
 # Report progress both via an interactive bar and a textual trail for CI logs.
 function Write-Step {
@@ -53,10 +53,6 @@ Write-Step 'Removing previous output'
 Remove-Item -LiteralPath $PortableOutputDir -Force -Recurse -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $InstallerDir -Force -Recurse -ErrorAction SilentlyContinue
 
-Write-Step 'Building translations'
-meson compile -C $BuildRoot aegisub-gmo
-if ($LASTEXITCODE -ne 0) { throw "aegisub-gmo build failed (exit $LASTEXITCODE)" }
-
 Write-Step 'Installing build output'
 meson install -C $BuildRoot --no-rebuild --destdir $InstallerDir
 if ($LASTEXITCODE -ne 0) { throw "meson install failed (exit $LASTEXITCODE)" }
@@ -65,7 +61,12 @@ Write-Step 'Copying executable'
 Copy-ToDirectory $InstallerDir\bin\aegisub.exe  $PortableOutputDir
 
 Write-Step 'Copying translations'
-Copy-ToDirectory "$InstallerDir\share\locale\*"  "$PortableOutputDir\locale" -Recurse
+$LocaleDir = Join-Path $InstallerDir "share\locale"
+if (Test-Path -LiteralPath $LocaleDir) {
+    Copy-ToDirectory "$LocaleDir\*" "$PortableOutputDir\locale" -Recurse
+} else {
+    Write-Host "No compiled translations were installed; portable build will use English."
+}
 
 Write-Step 'Copying dictionaries'
 Copy-ToDirectory $InstallerDepsDir\dictionaries\en_US.aff  $PortableOutputDir\dictionaries
