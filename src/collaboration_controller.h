@@ -20,4 +20,5 @@ public:
     uint32_t PresenceColorFor(AssDialogue const*) const;
     uint32_t UserColor(std::string const&) const;
     std::vector<std::pair<std::string,int>> RemotePlayheads() const;
+    int YTWarningCount(AssDialogue const*) const;
 };
