@@ -16,6 +16,7 @@
 
 #include <memory>
 
+class CollaborationController;
 class AssFile;
 class AudioBox;
 class AudioController;
@@ -65,6 +66,8 @@ struct Context {
 	std::unique_ptr<DialogManager> dialog;
 	FrameMain *frame = nullptr;
 	VideoDisplay *videoDisplay = nullptr;
+
+	std::unique_ptr<CollaborationController> collaboration;
 
 	Context();
 	~Context();

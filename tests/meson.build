@@ -85,3 +85,8 @@ test_setup = custom_target('setup-test-data',
 
 test('gtest main', runner, env: {'AEGISUB_TEST_DATA_DIR': meson.current_source_dir()}, depends: test_setup)
 test('luajit-52', executable('luajit-52', 'tests/luajit_52.c', dependencies: luajit))
+
+collaboration_tests = executable('collaboration-core',
+    'collaboration_core.cpp', '../src/collaboration/document.cpp',
+    cpp_args: tests_args)
+test('collaboration core', collaboration_tests)

@@ -1,0 +1,24 @@
+name: Collaboration checks
+on:
+  push:
+    branches: [master, 'collab/**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  core-and-network:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libwxgtk3.2-dev libboost-dev
+      - name: Merge and validation checks
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -g src/collaboration/document.cpp tests/collaboration_core.cpp -o /tmp/collaboration-core
+          /tmp/collaboration-core
+      - name: Actual TCP loopback checks
+        run: |
+          g++ -std=c++20 -Wall -Wextra -Werror $(wx-config --cxxflags base,net) -DwxUSE_GUI=0 src/collaboration/document.cpp tests/collaboration_transport.cpp $(wx-config --libs base,net) -o /tmp/collaboration-transport
+          /tmp/collaboration-transport
+      - name: Compile the editor integration
+        run: g++ -std=c++20 -Wall -Wextra -Werror -fsyntax-only $(wx-config --cxxflags) -Ilibaegisub/include -Isrc src/collaboration_controller.cpp src/command/collaboration.cpp

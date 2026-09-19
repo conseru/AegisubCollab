@@ -184,7 +184,7 @@ use_bundled_wx = force_all_fallbacks or force_fallback_for.contains('wxWidgets')
 if not use_bundled_wx
     wx_dep = dependency('wxWidgets', version: '>=' + get_option('wx_version'),
                         required: false,
-                        modules: ['std', 'stc', 'gl'])
+                        modules: ['std', 'stc', 'gl', 'net'])
     use_bundled_wx = not wx_dep.found()
 endif
 
@@ -231,6 +231,7 @@ else
         'wxUSE_ZLIB': 'sys',            # supplied by Meson below
         'CMAKE_BUILD_TYPE': build_type,
         'wxUSE_IMAGE': true,
+        'wxUSE_SOCKETS': true,
         'wxBUILD_MONOLITHIC': true      # otherwise breaks project generation w/ meson
     })
 

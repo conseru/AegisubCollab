@@ -46,6 +46,8 @@
         { "command" : "subtitle/spellcheck" }
     ],
     "main/subtitle" : [
+        { "command" : "collab/session" },
+        {},
         { "command" : "tool/style/manager" },
         { "command" : "tool/style/assistant" },
         { "command" : "tool/translation_assistant" },

@@ -32,6 +32,7 @@
 /// @ingroup main_ui
 
 #include "frame_main.h"
+#include "collaboration_controller.h"
 
 #include "include/aegisub/context.h"
 #include "include/aegisub/menu.h"
@@ -321,6 +322,7 @@ void FrameMain::OnCloseWindow(wxCloseEvent &event) {
 		return;
 	}
 
+	context->collaboration.reset();
 	context->dialog.reset();
 
 	// Store maximization state

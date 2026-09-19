@@ -17,6 +17,7 @@
 #include "include/aegisub/context.h"
 
 #include "ass_file.h"
+#include "collaboration_controller.h"
 #include "audio_controller.h"
 #include "auto4_base.h"
 #include "dialog_manager.h"

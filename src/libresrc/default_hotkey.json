@@ -107,6 +107,7 @@
 		]
 	},
 	"Default" : {
+		"collab/session" : ["Ctrl-Shift-J"],
 		"app/exit" : [
 			"Ctrl-Q"
 		],
