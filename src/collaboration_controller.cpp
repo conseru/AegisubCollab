@@ -190,7 +190,7 @@ struct CollaborationController::Impl : wxEvtHandler {
     wxTextCtrl *ytScanOutput=nullptr;
     wxChoice *ytTagChoice=nullptr;
     wxButton *ytInsertButton=nullptr,*ytScanButton=nullptr;
-    wxButton *hostButton=nullptr,*joinButton=nullptr,*leaveButton=nullptr,*undoMineButton=nullptr,*chatSendButton=nullptr,*lineNoteButton=nullptr,*cancelMediaButton=nullptr;
+    wxButton *hostButton=nullptr,*joinButton=nullptr,*leaveButton=nullptr,*undoMineButton=nullptr,*chatSendButton=nullptr,*lineNoteButton=nullptr,*cancelMediaButton=nullptr,*transferHostButton=nullptr;
     wxCheckBox *autoMediaBox=nullptr;
     wxChoice *followChoice=nullptr,*roleChoice=nullptr;
     struct PresenceInfo {std::string lineId; int frame=-1; bool typing=false;};
@@ -206,6 +206,9 @@ struct CollaborationController::Impl : wxEvtHandler {
     bool reconnecting=false, manualDisconnect=false;
     int reconnectAttempts=0;
     Clock::time_point reconnectAt=Clock::now(), reconnectStarted=Clock::now();
+    bool hostTransferPending=false;
+    std::string hostTransferTarget;
+    collab::Document hostTransferDocument;
     struct MediaSend {
         std::ifstream file;
         uint64_t size=0, sent=0;
@@ -283,6 +286,10 @@ struct CollaborationController::Impl : wxEvtHandler {
         if(chatSendButton) chatSendButton->Enable(active);
         if(lineNoteButton) lineNoteButton->Enable(active);
         if(cancelMediaButton) cancelMediaButton->Enable(active && (mediaReceive.active || !mediaSends.empty()));
+        if(transferHostButton) {
+            size_t editableGuests=0; if(room) for(auto const& p:peers) if(p->authenticated && p->role=="Editor") ++editableGuests;
+            transferHostButton->Enable(room && editableGuests==1 && peers.size()==1 && !hostTransferPending);
+        }
     }
     void ResetFollow() {
         roomPresence.clear(); peerPresence.clear(); localLineId.clear(); localFrame=-1; presenceDirty=false; localTyping=false;
@@ -396,6 +403,43 @@ struct CollaborationController::Impl : wxEvtHandler {
         ytScanOutput->SetValue(Wx(out));
         Status("YTSubConverter compatibility scan finished.");
     }
+    void TransferHost() {
+        if(!room) {Notice("Only the host can transfer host."); return;}
+        Peer* target=nullptr;
+        for(auto const& p:peers) if(p->authenticated && p->role=="Editor") {
+            if(target) {Notice("Host transfer currently requires exactly one connected editor."); return;}
+            target=p.get();
+        }
+        if(!target || peers.size()!=1) {Notice("Host transfer currently requires exactly one connected editor."); return;}
+        hostTransferPending=true; hostTransferTarget=target->name; hostTransferDocument=room->Current();
+        collab::Writer w; w.String("become-host"); w.String(name); w.Doc(hostTransferDocument); target->Queue(w);
+        Status("Transferring host to "+hostTransferTarget+"...");
+        Buttons();
+    }
+    void BecomeHostFromPeer(Peer& oldHost,std::string const& oldHostName,collab::Document const& doc) {
+        wxIPV4address local;
+        if(!oldHost.socket->GetLocal(local)) throw collab::Conflict("Could not determine your Hamachi address for host transfer.");
+        wxIPV4address listen; listen.Hostname(local.IPAddress()); listen.Service(Port);
+        auto newListener=std::make_unique<wxSocketServer>(listen,wxSOCKET_NOWAIT); newListener->Notify(false);
+        if(!newListener->IsOk()) {
+            collab::Writer fail; fail.String("host-transfer-failed"); fail.String("Could not listen on the transferred host address."); oldHost.Queue(fail);
+            return;
+        }
+        oldHost.name=oldHostName; oldHost.role="Editor"; oldHost.authenticated=true; oldHost.hello=true; oldHost.ack=0;
+        room=std::make_unique<collab::Room>(doc); base=doc; revision=1; sequence=0; inFlight=false; connected=true;
+        listener=std::move(newListener); reconnecting=false; hostTransferPending=false;
+        collab::Writer ready; ready.String("host-ready"); ready.String(name); oldHost.Queue(ready); oldHost.Flush();
+        People(); BroadcastPresence(); Notice("You are now the room host."); Status("Hosting - host transfer completed."); Buttons();
+    }
+    void FinishHostTransfer(Peer& newHost,std::string const& newHostName) {
+        if(!hostTransferPending || newHostName!=hostTransferTarget) throw collab::Conflict("Unexpected host transfer acknowledgement.");
+        listener.reset(); room.reset(); mediaSends.clear(); peerPresence.clear();
+        base=hostTransferDocument; revision=1; sequence=0; inFlight=false; connected=true; reconnecting=false;
+        newHost.name=newHostName; newHost.role="Host"; newHost.authenticated=true; newHost.hello=true; newHost.ack=0;
+        hostTransferPending=false; hostTransferTarget.clear();
+        people->SetLabel(Wx("Connected users (2)\n\n"+newHostName+" (Host)\n"+name+" (Editor)"));
+        Notice(newHostName+" is now the room host."); Status("Connected - host transfer completed."); presenceDirty=true; Buttons();
+    }
     void Guard(std::function<void()> fn) {
         try {fn();}
         catch(std::exception const& e) {Stop(e.what()); if(window) {window->Show(); window->Raise();}}
@@ -442,7 +486,8 @@ struct CollaborationController::Impl : wxEvtHandler {
             auto actionButtons=new wxBoxSizer(wxHORIZONTAL);
             undoMineButton=new wxButton(collabPage,wxID_ANY,"Undo my last synced edit");
             cancelMediaButton=new wxButton(collabPage,wxID_ANY,"Cancel media transfer");
-            actionButtons->Add(undoMineButton,1,wxRIGHT,8); actionButtons->Add(cancelMediaButton,1);
+            transferHostButton=new wxButton(collabPage,wxID_ANY,"Transfer host");
+            actionButtons->Add(undoMineButton,1,wxRIGHT,8); actionButtons->Add(cancelMediaButton,1,wxRIGHT,8); actionButtons->Add(transferHostButton,1);
             collabRoot->Add(actionButtons,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
             collabRoot->Add(recent,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
 
@@ -570,6 +615,7 @@ https://github.com/arcusmaximus/YTSubConverter
             joinButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Guard([this]{Start(false);});});
             leaveButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Goodbye(); Stop("Disconnected. Your subtitles stay open.");});
             undoMineButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Guard([this]{UndoMine();});});
+            transferHostButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Guard([this]{TransferHost();});});
             cancelMediaButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {
                 if(!connected) return;
                 if(!room && !peers.empty()) {collab::Writer w; w.String("media-cancel"); peers.front()->Queue(w);}
@@ -918,13 +964,19 @@ https://github.com/arcusmaximus/YTSubConverter
         collab::Reader r(message); auto kind=r.String();
         if(room) {
             if(!p.authenticated) {
-                if(kind!="hello" || r.Number()!=5) throw collab::Conflict("Incompatible collaboration build.");
+                if(kind!="hello" || r.Number()!=6) throw collab::Conflict("Incompatible collaboration build.");
                 auto username=r.String(); auto secret=r.String(); auto requestedRole=r.String(); r.End(); CheckName(username);
                 if(requestedRole!="Editor" && requestedRole!="Viewer") throw collab::Conflict("Invalid collaboration role.");
                 if(secret!=password) throw collab::Conflict("Room password did not match.");
                 if(username==name || std::any_of(peers.begin(),peers.end(),[&](auto const& q){return q.get()!=&p && q->authenticated && q->name==username;})) throw collab::Conflict("That name is already in the room.");
                 p.name=username; p.role=requestedRole; p.authenticated=true; State(p); People(); SendMediaOffer(p);
                 BroadcastNotice(username+" joined the room."); presenceDirty=true; return;
+            }
+            if(kind=="host-ready") {
+                auto newHostName=r.String(); r.End(); FinishHostTransfer(p,newHostName); return;
+            }
+            if(kind=="host-transfer-failed") {
+                auto why=r.String(); r.End(); hostTransferPending=false; Notice("Host transfer failed: "+why); Buttons(); return;
             }
             if(kind=="leave") {r.End(); throw collab::Conflict("Client disconnected.");}
             if(kind=="presence") {
@@ -973,6 +1025,10 @@ https://github.com/arcusmaximus/YTSubConverter
             }
         }
         else {
+            if(kind=="become-host") {
+                auto oldHostName=r.String(); auto doc=r.Doc(); r.End(); CheckStyles(doc);
+                BecomeHostFromPeer(p,oldHostName,doc); return;
+            }
             if(kind=="chat-event") {
                 auto who=r.String(), text=r.String(), lineId=r.String(); r.End();
                 if(who.empty() || who.size()>40 || text.empty() || text.size()>1000 || lineId.size()>32) throw collab::Conflict("Invalid chat message.");
@@ -1087,7 +1143,7 @@ https://github.com/arcusmaximus/YTSubConverter
                 auto& p=**it;
                 try {
                     if(!room && !p.hello && p.socket->IsConnected()) {
-                        collab::Writer w; w.String("hello"); w.Number(5); w.String(name); w.String(password); w.String(roleChoice?Utf8(roleChoice->GetStringSelection()):std::string("Editor")); p.Queue(w); p.hello=true;
+                        collab::Writer w; w.String("hello"); w.Number(6); w.String(name); w.String(password); w.String(roleChoice?Utf8(roleChoice->GetStringSelection()):std::string("Editor")); p.Queue(w); p.hello=true;
                     }
                     for(auto const& message:p.Read()) Handle(p,message);
                     if(room && p.authenticated) PumpMedia(p);
