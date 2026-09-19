@@ -13,6 +13,9 @@ It is source code for a prototype, not a verified Windows release yet.
    the host's subtitles in the current window.
 4. Close the collaboration window and edit normally. Open it again to see the
    people connected, connection status, or disconnect.
+5. If the host has a video open, the joiner can automatically download and open
+   that exact room video when their currently loaded video does not match the
+   host filename and file size. The option is enabled by default in Collaborate.
 
 The host listens on TCP port 49215, bound specifically to the entered address.
 Allow that app/port through Windows Firewall for the Hamachi connection when
@@ -26,11 +29,21 @@ Subtitles, timing, inserted/copied lines, explicit deletions, styles and script
 coordinate settings are shared. Each new line receives a persistent identity
 and a `[by Name]` suffix in Actor. Existing Actor roles are retained.
 
-Both people still open their own copy of the **same video** and install the
-same fonts. Video/audio files, playback position, attachments, and other
-scripts' private extradata are not transferred. Shared PlayRes/LayoutRes and
-style settings preserve the subtitle coordinate system; they do not rescale
-one person's video into a different video.
+Both people should install the same fonts. The host's currently opened video
+can now be transferred directly to a joiner over the existing Hamachi room
+connection and opened automatically. Downloads are saved under the Aegisub
+user-data directory in `collaboration-media`. Standalone audio files,
+playback position, attachments, and other scripts' private extradata are not
+transferred. Shared PlayRes/LayoutRes and style settings preserve the subtitle
+coordinate system; they do not rescale one person's video into a different
+video.
+
+Video transfers are chunked so subtitle updates can continue on the same TCP
+connection, and are capped at 32 GB. The receiver checks the announced and
+written byte count before opening the file. This first media-transfer version
+does not yet provide resume support or a cryptographic checksum; interrupted
+partial downloads are removed and both peers should remain on a trusted
+Hamachi network.
 
 ## Data preservation and current limits
 
