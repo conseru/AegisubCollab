@@ -15,6 +15,7 @@
 // Aegisub Project http://www.aegisub.org/
 
 #include <libaegisub/signal.h>
+#include <string>
 
 class wxStyledTextCtrl;
 class wxStyledTextEvent;
@@ -34,6 +35,7 @@ class TextSelectionController {
 public:
 	void SetSelection(int start, int end);
 	void SetInsertionPoint(int point);
+	void ReplaceSelection(std::string const& text);
 
 	int GetSelectionStart() const { return selection_start; }
 	int GetSelectionEnd() const { return selection_end; }
