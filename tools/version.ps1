@@ -30,6 +30,13 @@ if ([System.IO.Path]::GetFullPath([System.IO.Path]::Combine((pwd).Path, $BuildRo
 $gitVersionHeaderPath = Join-Path $BuildRoot 'git_version.h'
 
 $version = @{}
+
+# Fallback version for forks/builds where Git tags are unavailable.
+# A matching Git release tag will override these values below.
+$version['TAGGED_RELEASE'] = $false
+$version['RESOURCE_BASE_VERSION'] = @(3, 5, 0)
+$version['INSTALLER_VERSION'] = '3.5.0'
+
 if (Test-Path $gitVersionHeaderPath) {
   Get-Content $gitVersionHeaderPath | %{$_.Trim()} | ?{$_} | %{
     switch -regex ($_) {
