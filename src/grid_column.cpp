@@ -348,6 +348,25 @@ public:
 };
 
 
+
+struct GridColumnYTCompatibility final : GridColumn {
+    COLUMN_HEADER(_("YT"))
+    COLUMN_DESCRIPTION(_("YTSubConverter compatibility warnings"))
+    bool Centered() const override { return true; }
+    wxString Value(const AssDialogue *d, const agi::Context *c) const override {
+        if(!c->collaboration) return {};
+        auto n=c->collaboration->YTWarningCount(d);
+        return n?wxString("!")+std::to_wstring(n):wxString("OK");
+    }
+    int Width(const agi::Context *, WidthHelper &helper) const override {return helper("!99");}
+    void Paint(wxDC &dc,int x,int y,const AssDialogue *d,const agi::Context *c) const override {
+        auto old=dc.GetTextForeground();
+        if(c->collaboration && c->collaboration->YTWarningCount(d)) dc.SetTextForeground(wxColour(220,90,30));
+        GridColumn::Paint(dc,x,y,d,c);
+        dc.SetTextForeground(old);
+    }
+};
+
 struct GridColumnCollabAuthor final : GridColumn {
     COLUMN_HEADER(_("Author"))
     COLUMN_DESCRIPTION(_("Collaboration line author"))
@@ -455,6 +474,7 @@ std::vector<std::unique_ptr<GridColumn>> GetGridColumns() {
 	ret.push_back(make<GridColumnCPS>());
 	ret.push_back(make<GridColumnStyle>());
 	ret.push_back(make<GridColumnActor>());
+	ret.push_back(make<GridColumnYTCompatibility>());
 	ret.push_back(make<GridColumnCollabAuthor>());
 	ret.push_back(make<GridColumnCollabLastEditor>());
 	ret.push_back(make<GridColumnCollabPresence>());
