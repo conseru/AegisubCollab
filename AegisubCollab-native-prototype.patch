@@ -1,0 +1,1112 @@
+From 26a215ab976e8f1a01b18a0dd11a74ee6bf37a75 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Fri, 18 Sep 2026 21:08:47 -0700
+Subject: [PATCH] Add native Hamachi collaboration prototype with safe document
+ merging
+
+---
+ .github/workflows/ci.yml                  |   2 +-
+ .github/workflows/collaboration-tests.yml |  24 ++
+ docs/collaboration.md                     |  88 ++++++
+ meson.build                               |   3 +-
+ src/collaboration/document.cpp            | 148 +++++++++
+ src/collaboration/document.h              |  59 ++++
+ src/collaboration/transport.h             |  44 +++
+ src/collaboration_controller.cpp          | 358 ++++++++++++++++++++++
+ src/collaboration_controller.h            |  12 +
+ src/command/collaboration.cpp             |  17 +
+ src/command/command.cpp                   |   2 +
+ src/context.cpp                           |   1 +
+ src/frame_main.cpp                        |   2 +
+ src/include/aegisub/context.h             |   3 +
+ src/libresrc/default_hotkey.json          |   1 +
+ src/libresrc/default_menu_platform.json   |   2 +
+ src/libresrc/osx/default_menu.json        |   2 +
+ src/meson.build                           |   3 +
+ tests/collaboration_core.cpp              |  38 +++
+ tests/collaboration_transport.cpp         |  49 +++
+ tests/meson.build                         |   5 +
+ 21 files changed, 861 insertions(+), 2 deletions(-)
+ create mode 100644 .github/workflows/collaboration-tests.yml
+ create mode 100644 docs/collaboration.md
+ create mode 100644 src/collaboration/document.cpp
+ create mode 100644 src/collaboration/document.h
+ create mode 100644 src/collaboration/transport.h
+ create mode 100644 src/collaboration_controller.cpp
+ create mode 100644 src/collaboration_controller.h
+ create mode 100644 src/command/collaboration.cpp
+ create mode 100644 tests/collaboration_core.cpp
+ create mode 100644 tests/collaboration_transport.cpp
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 46423f9..beb092a 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -2,7 +2,7 @@ name: Meson CI
+ 
+ on:
+   push:
+-    branches: [ master ]
++    branches: [ master, 'collab/**' ]
+     tags: [ 'v*' ]
+   pull_request:
+     branches: [ master ]
+diff --git a/.github/workflows/collaboration-tests.yml b/.github/workflows/collaboration-tests.yml
+new file mode 100644
+index 0000000..04211c4
+--- /dev/null
++++ b/.github/workflows/collaboration-tests.yml
+@@ -0,0 +1,24 @@
++name: Collaboration checks
++on:
++  push:
++    branches: [master, 'collab/**']
++  pull_request:
++  workflow_dispatch:
++permissions:
++  contents: read
++jobs:
++  core-and-network:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - run: sudo apt-get update && sudo apt-get install -y libwxgtk3.2-dev libboost-dev
++      - name: Merge and validation checks
++        run: |
++          g++ -std=c++20 -Wall -Wextra -Werror -fsanitize=address,undefined -g src/collaboration/document.cpp tests/collaboration_core.cpp -o /tmp/collaboration-core
++          /tmp/collaboration-core
++      - name: Actual TCP loopback checks
++        run: |
++          g++ -std=c++20 -Wall -Wextra -Werror $(wx-config --cxxflags base,net) -DwxUSE_GUI=0 src/collaboration/document.cpp tests/collaboration_transport.cpp $(wx-config --libs base,net) -o /tmp/collaboration-transport
++          /tmp/collaboration-transport
++      - name: Compile the editor integration
++        run: g++ -std=c++20 -Wall -Wextra -Werror -fsyntax-only $(wx-config --cxxflags) -Ilibaegisub/include -Isrc src/collaboration_controller.cpp src/command/collaboration.cpp
+diff --git a/docs/collaboration.md b/docs/collaboration.md
+new file mode 100644
+index 0000000..4fb457e
+--- /dev/null
++++ b/docs/collaboration.md
+@@ -0,0 +1,88 @@
++# Native collaboration prototype
++
++This branch adds **Subtitle → Collaborate…** (Ctrl+Shift+J) directly to Aegisub.
++It is source code for a prototype, not a verified Windows release yet.
++
++## Use after building
++
++1. Both people run the same build and connect to the same Hamachi network.
++2. The host opens the ASS file, opens Collaborate, enters their name, their own
++   Hamachi IPv4 address and a shared room password, then clicks **Host room**.
++3. The guest enters their name, the host's Hamachi IPv4 address and that password,
++   then clicks **Join room**. Joining saves a separate ASS backup first and opens
++   the host's subtitles in the current window.
++4. Close the collaboration window and edit normally. Open it again to see the
++   people connected, connection status, or disconnect.
++
++The host listens on TCP port 49215, bound specifically to the entered address.
++Allow that app/port through Windows Firewall for the Hamachi connection when
++needed. This protocol relies on Hamachi for encryption and is intended for a
++trusted VPN; it does not provide its own TLS or a public Internet service.
++The room ends when the host closes Aegisub or disconnects.
++
++Edits are checked after a short pause (250 ms), with a 10-second fallback scan.
++Only changed subtitle documents are transmitted. Heartbeats run separately.
++Subtitles, timing, inserted/copied lines, explicit deletions, styles and script
++coordinate settings are shared. Each new line receives a persistent identity
++and a `[by Name]` suffix in Actor. Existing Actor roles are retained.
++
++Both people still open their own copy of the **same video** and install the
++same fonts. Video/audio files, playback position, attachments, and other
++scripts' private extradata are not transferred. Shared PlayRes/LayoutRes and
++style settings preserve the subtitle coordinate system; they do not rescale
++one person's video into a different video.
++
++## Data preservation and current limits
++
++- Distinct lines stay distinct even when they contain identical text. Rows are
++  matched by persistent identities, never by row number or text alone.
++- Unrelated concurrent edits merge. Conflicting edits to the same field,
++  timing, style, or coordinate settings pause by disconnecting the affected
++  editor and retain that editor's local document. There is no conflict-resolution
++  dialog yet: save both versions before resolving and rejoining.
++- Moving/sorting existing lines during a session is currently rejected safely.
++  Sort before hosting. Undoing a previously synced deletion may also conflict
++  with the deletion tombstone. Local Undo can undo received edits; this prototype
++  does not yet implement per-author collaborative undo.
++- Joining intentionally opens the room's document; it does not combine two
++  independently started projects. The before-join backup is under the Aegisub
++  user data directory in `collaboration-backups/before-join-<id>.ass`.
++- Opening another subtitle file disconnects the session. Aegisub's usual Save
++  and autosave still apply; a room is not a cloud backup.
++- Limits: eight guests, 20,000 lines, 2,000 styles and an 8 MB document. The host
++  retains 32 revisions; a client older than that must reconnect after saving
++  its local work. Negative numeric fields and unsupported ASS field content
++  are rejected rather than silently rewritten.
++
++## Build and verification
++
++Use the repository's normal Meson build instructions. wxWidgets networking is
++now required in addition to its existing components. No Lua collaboration
++script, Python server, or batch launcher is required by users.
++
++The existing **Meson CI** workflow also runs on `collab/**` branches. Its Windows
++job builds and uploads the portable ZIP. It can also be run manually against
++this branch. No Windows artifact has been produced or tested in this workspace.
++
++Standalone merge checks:
++
++```sh
++c++ -std=c++20 -Wall -Wextra -Werror src/collaboration/document.cpp \
++  tests/collaboration_core.cpp -o collaboration-core
++./collaboration-core
++```
++
++Standalone loopback networking checks (Linux with wxWidgets development files):
++
++```sh
++c++ -std=c++20 $(wx-config --cxxflags base,net) -DwxUSE_GUI=0 \
++  src/collaboration/document.cpp tests/collaboration_transport.cpp \
++  $(wx-config --libs base,net) -o collaboration-transport
++./collaboration-transport
++```
++
++Before sharing a release, run the full app build and exercise two Windows PCs:
++join/backup; simultaneous edits on different lines; same-field conflict;
++copy/paste above and below the original; deletion versus edit; changed styles
++and resolution; disconnect/reconnect; host shutdown; save/reopen; and Undo.
++Check subtitle grid selection and video rendering during remote edits.
+diff --git a/meson.build b/meson.build
+index 29b7fd3..a7466ef 100644
+--- a/meson.build
++++ b/meson.build
+@@ -184,7 +184,7 @@ use_bundled_wx = force_all_fallbacks or force_fallback_for.contains('wxWidgets')
+ if not use_bundled_wx
+     wx_dep = dependency('wxWidgets', version: '>=' + get_option('wx_version'),
+                         required: false,
+-                        modules: ['std', 'stc', 'gl'])
++                        modules: ['std', 'stc', 'gl', 'net'])
+     use_bundled_wx = not wx_dep.found()
+ endif
+ 
+@@ -231,6 +231,7 @@ else
+         'wxUSE_ZLIB': 'sys',            # supplied by Meson below
+         'CMAKE_BUILD_TYPE': build_type,
+         'wxUSE_IMAGE': true,
++        'wxUSE_SOCKETS': true,
+         'wxBUILD_MONOLITHIC': true      # otherwise breaks project generation w/ meson
+     })
+ 
+diff --git a/src/collaboration/document.cpp b/src/collaboration/document.cpp
+new file mode 100644
+index 0000000..26cbfdd
+--- /dev/null
++++ b/src/collaboration/document.cpp
+@@ -0,0 +1,148 @@
++// Copyright (c) 2026 OpenAI. SPDX-License-Identifier: BSD-3-Clause
++#include "document.h"
++#include <algorithm>
++#include <limits>
++#include <utility>
++namespace collab {
++namespace {
++template<class T> T Choose(T const& b, T const& l, T const& r, std::string const& label) {
++    if (l == b) return r;
++    if (r == b || l == r) return l;
++    throw Conflict("Both editors changed " + label + ". Local edits are kept; resolve the conflict before reconnecting.");
++}
++using Map = std::map<std::string, std::string>;
++Map MergeMap(Map const& b, Map const& l, Map const& r, std::string const& label) {
++    Map result;
++    std::set<std::string> keys;
++    for (auto const* m : {&b, &l, &r}) for (auto const& kv : *m) keys.insert(kv.first);
++    using Value = std::pair<bool, std::string>;
++    auto get = [](Map const& m, std::string const& k) -> Value {
++        auto it = m.find(k); return it == m.end() ? Value{false, ""} : Value{true, it->second};
++    };
++    for (auto const& k : keys) {
++        auto v = Choose(get(b,k), get(l,k), get(r,k), label + " " + k);
++        if (v.first) result[k] = v.second;
++    }
++    return result;
++}
++int64_t Integer(std::string const& s) {
++    if (s.empty() || s.size() > 10 || s.find_first_not_of("0123456789") != std::string::npos)
++        throw Conflict("Invalid numeric subtitle field.");
++    auto n = std::stoll(s);
++    if (n > std::numeric_limits<int32_t>::max()) throw Conflict("Subtitle field out of range.");
++    return n;
++}
++}
++void Validate(Document const& doc) {
++    if (doc.lines.size() > 20000 || doc.styles.size() > 2000 || doc.settings.size() > 32)
++        throw Conflict("Project exceeds collaboration limits.");
++    size_t bytes=12;
++    auto size=[&](std::string const& value) {bytes+=4+value.size(); if(bytes>MaxFrame-64) throw Conflict("Project exceeds the 8 MB room limit.");};
++    for(auto const& line:doc.lines) {size(line.id); for(auto const& field:line.fields) size(field);}
++    for(auto const* map:{&doc.settings,&doc.styles}) for(auto const& kv:*map) {size(kv.first); size(kv.second);}
++    std::set<std::string> ids;
++    for (auto const& l : doc.lines) {
++        if (l.id.size() != 32 || l.id.find_first_not_of("0123456789abcdef") != std::string::npos || !ids.insert(l.id).second)
++            throw Conflict("Invalid or duplicate line identity.");
++        for (auto const& f : l.fields) if (f.size() > 100000 || f.find('\0') != std::string::npos || f.find_first_of("\r\n") != std::string::npos)
++            throw Conflict("Invalid subtitle text.");
++        if (l.fields[0] != "0" && l.fields[0] != "1") throw Conflict("Invalid comment flag.");
++        for (size_t i : {1u,2u,3u,6u,7u,8u}) Integer(l.fields[i]);
++        if (Integer(l.fields[2]) > Integer(l.fields[3])) throw Conflict("A line ends before it starts.");
++        for (size_t i : {4u,5u,9u}) if (l.fields[i].find(',') != std::string::npos) throw Conflict("Commas are not supported in style/actor/effect fields.");
++    }
++    static std::set<std::string> const settings = {"PlayResX","PlayResY","LayoutResX","LayoutResY","WrapStyle","ScaledBorderAndShadow","YCbCr Matrix"};
++    for (auto const& kv : doc.settings) {
++        if (!settings.count(kv.first) || kv.second.size() > 128 || kv.second.find_first_of("\r\n") != std::string::npos || kv.second.find('\0') != std::string::npos)
++            throw Conflict("Invalid script setting.");
++        if (kv.first.find("Res") != std::string::npos && !kv.second.empty() && (Integer(kv.second) < 1 || Integer(kv.second) > 100000))
++            throw Conflict("Invalid script resolution.");
++    }
++    for (auto const& kv : doc.styles) if (kv.first.empty() || kv.first.size()>1024 || kv.second.size()>100000 ||
++        kv.first.find('\0')!=std::string::npos || kv.first.find_first_of(",\r\n")!=std::string::npos || kv.second.find_first_of("\r\n")!=std::string::npos || kv.second.find('\0')!=std::string::npos)
++        throw Conflict("Invalid style definition.");
++}
++Document Merge(Document const& base, Document const& local, Document const& remote, std::set<std::string> const& deleted) {
++    Validate(base); Validate(local); Validate(remote);
++    std::map<std::string, Line> b,l,r,result;
++    std::map<std::string,size_t> rank;
++    for (size_t i=0;i<base.lines.size();++i) { b.emplace(base.lines[i].id,base.lines[i]); rank[base.lines[i].id]=i+1; }
++    size_t previous=0;
++    for (auto const& x:local.lines) {
++        l.emplace(x.id,x);
++        if (rank.count(x.id)) {
++            if (rank[x.id]<previous) throw Conflict("Moving/sorting existing lines during collaboration is not supported yet.");
++            previous=rank[x.id];
++        }
++    }
++    for (auto const& x:remote.lines) r.emplace(x.id,x);
++    for (auto const& kv:b) {
++        auto const& id=kv.first; auto const& old=kv.second;
++        if (!l.count(id) || !r.count(id)) {
++            if ((l.count(id) && l.at(id)!=old) || (r.count(id) && r.at(id)!=old))
++                throw Conflict("A deletion conflicts with an edit to line " + std::to_string(rank[id]) + ". Local edits are kept.");
++            continue;
++        }
++        Line x=old;
++        for (size_t i=0;i<11;++i) x.fields[i]=Choose(old.fields[i],l.at(id).fields[i],r.at(id).fields[i],"line " + std::to_string(rank[id]));
++        auto pair=[](Line const& a){return std::make_pair(a.fields[2],a.fields[3]);};
++        auto timing=Choose(pair(old),pair(l.at(id)),pair(r.at(id)),"timing on line " + std::to_string(rank[id]));
++        x.fields[2]=timing.first; x.fields[3]=timing.second; result.emplace(id,std::move(x));
++    }
++    for (auto const& kv:r) if (!b.count(kv.first)) result.emplace(kv);
++    for (auto const& kv:l) if (!b.count(kv.first)) {
++        if (deleted.count(kv.first)) throw Conflict("A stale addition was already deleted remotely. Local edits are kept.");
++        if (r.count(kv.first) && r.at(kv.first)!=kv.second) throw Conflict("A newly added line has conflicting edits.");
++        result[kv.first]=kv.second;
++    }
++    std::vector<std::string> order, pending;
++    std::set<std::string> present;
++    for (auto const& x:remote.lines) if (result.count(x.id)) {order.push_back(x.id); present.insert(x.id);}
++    for (auto const& x:local.lines) {
++        if (!result.count(x.id)) continue;
++        if (present.count(x.id)) {
++            auto at=std::find(order.begin(),order.end(),x.id);
++            order.insert(at,pending.begin(),pending.end()); present.insert(pending.begin(),pending.end()); pending.clear();
++        }
++        else pending.push_back(x.id);
++    }
++    order.insert(order.end(),pending.begin(),pending.end());
++    Document out;
++    for (auto const& id:order) out.lines.push_back(result.at(id));
++    // Treat coordinate settings together to prevent mismatched width/height pairs.
++    out.settings=Choose(base.settings,local.settings,remote.settings,"script resolution/settings");
++    out.styles=MergeMap(base.styles,local.styles,remote.styles,"style");
++    Validate(out); return out;
++}
++Room::Room(Document initial) { Validate(initial); history.emplace(1,std::move(initial)); }
++bool Room::Apply(uint64_t base,Document const& proposed) {
++    auto it=history.find(base);
++    if (it==history.end()) throw Conflict("Unknown base revision; reconnect using a saved copy.");
++    auto merged=Merge(it->second,proposed,Current(),deleted);
++    if (merged==Current()) return false;
++    std::set<std::string> surviving; for(auto const& x:merged.lines) surviving.insert(x.id);
++    auto next_deleted=deleted;
++    for(auto const& x:Current().lines) if(!surviving.count(x.id)) next_deleted.insert(x.id);
++    // Publish only after all validation and allocations have succeeded.
++    history.emplace(revision+1,std::move(merged)); deleted.swap(next_deleted); ++revision;
++    // Bound revision history. Slow clients fail safely instead of merging against a guessed base.
++    while(history.size()>32) history.erase(history.begin());
++    return true;
++}
++void Writer::Number(uint32_t n) { for (int i=3;i>=0;--i) bytes.push_back(static_cast<char>((n>>(i*8))&255)); if(bytes.size()>MaxFrame) throw Conflict("Message exceeds 8 MB."); }
++void Writer::String(std::string const& s) { if(s.size()>MaxFrame || bytes.size()+4+s.size()>MaxFrame) throw Conflict("Message exceeds 8 MB."); Number(static_cast<uint32_t>(s.size())); bytes+=s; }
++void Writer::Doc(Document const& doc) {
++    Validate(doc); Number(static_cast<uint32_t>(doc.lines.size()));
++    for(auto const& l:doc.lines) {String(l.id); for(auto const& f:l.fields) String(f);}
++    for(auto const* map:{&doc.settings,&doc.styles}) {Number(static_cast<uint32_t>(map->size())); for(auto const& kv:*map){String(kv.first); String(kv.second);}}
++}
++uint32_t Reader::Number() { if(bytes.size()>MaxFrame || pos+4>bytes.size()) throw Conflict("Truncated message."); uint32_t n=0; for(int i=0;i<4;++i) n=(n<<8)|static_cast<unsigned char>(bytes[pos++]); return n; }
++std::string Reader::String() {auto n=Number(); if(n>MaxFrame || n>bytes.size()-pos) throw Conflict("Invalid message field length."); auto s=bytes.substr(pos,n); pos+=n; return s;}
++Document Reader::Doc() {
++    Document doc; auto count=Number(); if(count>20000) throw Conflict("Too many subtitle lines.");
++    for(uint32_t i=0;i<count;++i) {Line l; l.id=String(); for(auto& f:l.fields) f=String(); doc.lines.push_back(std::move(l));}
++    for(auto* m:{&doc.settings,&doc.styles}) {auto n=Number(); if(n>2000) throw Conflict("Too many settings/styles."); for(uint32_t i=0;i<n;++i) {auto k=String(),v=String(); if(!m->emplace(k,v).second) throw Conflict("Duplicate map key.");}}
++    Validate(doc); return doc;
++}
++void Reader::End() const {if(pos!=bytes.size()) throw Conflict("Unexpected trailing message data.");}
++}
+diff --git a/src/collaboration/document.h b/src/collaboration/document.h
+new file mode 100644
+index 0000000..a75bab6
+--- /dev/null
++++ b/src/collaboration/document.h
+@@ -0,0 +1,59 @@
++// Copyright (c) 2026 OpenAI. SPDX-License-Identifier: BSD-3-Clause
++#pragma once
++#include <array>
++#include <cstdint>
++#include <map>
++#include <set>
++#include <stdexcept>
++#include <string>
++#include <vector>
++
++namespace collab {
++// comment, layer, start, end, style, actor, margin L/R/V, effect, text.
++struct Line {
++    std::string id;
++    std::array<std::string, 11> fields;
++    bool operator==(Line const& other) const { return id == other.id && fields == other.fields; }
++    bool operator!=(Line const& other) const { return !(*this == other); }
++};
++struct Document {
++    std::vector<Line> lines;
++    std::map<std::string, std::string> settings, styles;
++    bool operator==(Document const& o) const { return lines == o.lines && settings == o.settings && styles == o.styles; }
++    bool operator!=(Document const& o) const { return !(*this == o); }
++};
++struct Conflict : std::runtime_error { using std::runtime_error::runtime_error; };
++void Validate(Document const&);
++Document Merge(Document const& base, Document const& local, Document const& remote,
++               std::set<std::string> const& deleted = {});
++class Room {
++    std::map<uint64_t, Document> history;
++    std::set<std::string> deleted;
++    uint64_t revision = 1;
++public:
++    explicit Room(Document initial);
++    uint64_t Revision() const { return revision; }
++    Document const& Current() const { return history.at(revision); }
++    bool Apply(uint64_t base, Document const& proposed);
++};
++// A bounded, length-prefixed wire format (no parsing of executable code).
++class Writer {
++    std::string bytes;
++public:
++    void Number(uint32_t n);
++    void String(std::string const& s);
++    void Doc(Document const& doc);
++    std::string const& Bytes() const { return bytes; }
++};
++class Reader {
++    std::string const& bytes;
++    size_t pos = 0;
++public:
++    explicit Reader(std::string const& bytes) : bytes(bytes) {}
++    uint32_t Number();
++    std::string String();
++    Document Doc();
++    void End() const;
++};
++constexpr size_t MaxFrame = 8 * 1024 * 1024;
++}
+diff --git a/src/collaboration/transport.h b/src/collaboration/transport.h
+new file mode 100644
+index 0000000..b83cc57
+--- /dev/null
++++ b/src/collaboration/transport.h
+@@ -0,0 +1,44 @@
++// Copyright (c) 2026 OpenAI. SPDX-License-Identifier: BSD-3-Clause
++#pragma once
++#include "document.h"
++#include <wx/socket.h>
++#include <chrono>
++#include <memory>
++namespace collab {
++using Clock = std::chrono::steady_clock;
++struct SocketPeer {
++    std::unique_ptr<wxSocketBase> socket;
++    std::string input, output, name;
++    uint32_t ack=0;
++    bool authenticated=false, hello=false;
++    Clock::time_point last=Clock::now();
++    explicit SocketPeer(wxSocketBase* s):socket(s) {socket->SetFlags(wxSOCKET_NOWAIT); socket->Notify(false);}
++    void Queue(collab::Writer const& w) {
++        if(output.size()+w.Bytes().size()+4>2*collab::MaxFrame) throw collab::Conflict("Connection is too slow; local edits are kept.");
++        collab::Writer header; header.Number(static_cast<uint32_t>(w.Bytes().size())); output+=header.Bytes(); output+=w.Bytes();
++    }
++    void Flush() {
++        if(output.empty()) return;
++        socket->Write(output.data(),static_cast<wxUint32>(output.size()));
++        output.erase(0,socket->LastCount());
++        if(socket->Error() && socket->LastError()!=wxSOCKET_WOULDBLOCK) throw collab::Conflict("Connection lost. Local edits are kept.");
++    }
++    std::vector<std::string> Read() {
++        std::vector<std::string> messages;
++        // Bound work per UI tick; partial frames stay in the buffer.
++        for(int i=0;i<16 && socket->IsData();++i) {
++            char bytes[65536]; socket->Read(bytes,sizeof bytes); input.append(bytes,socket->LastCount());
++            while(input.size()>=4) {
++                std::string header=input.substr(0,4); collab::Reader r(header); auto size=r.Number();
++                if(!size || size>collab::MaxFrame) throw collab::Conflict("Invalid incoming message size.");
++                if(input.size()<size+4) break;
++                messages.push_back(input.substr(4,size)); input.erase(0,size+4);
++                if(messages.size()>64) throw collab::Conflict("Too many incoming messages.");
++            }
++        }
++        if(!messages.empty()) last=Clock::now();
++        return messages;
++    }
++};
++
++}
+diff --git a/src/collaboration_controller.cpp b/src/collaboration_controller.cpp
+new file mode 100644
+index 0000000..3308e46
+--- /dev/null
++++ b/src/collaboration_controller.cpp
+@@ -0,0 +1,358 @@
++// Copyright (c) 2026 OpenAI. SPDX-License-Identifier: BSD-3-Clause
++#include "collaboration_controller.h"
++#include "collaboration/document.h"
++#include "collaboration/transport.h"
++#include "include/aegisub/context.h"
++#include "ass_dialogue.h"
++#include "ass_file.h"
++#include "ass_info.h"
++#include "ass_style.h"
++#include "selection_controller.h"
++#include "subs_controller.h"
++#include "subtitle_format_ass.h"
++#include <libaegisub/vfr.h>
++#include <wx/button.h>
++#include <wx/dialog.h>
++#include <wx/filename.h>
++#include <wx/msgdlg.h>
++#include <wx/sizer.h>
++#include <wx/socket.h>
++#include <wx/stattext.h>
++#include <wx/stdpaths.h>
++#include <wx/textctrl.h>
++#include <wx/timer.h>
++#include <wx/weakref.h>
++#include <algorithm>
++#include <chrono>
++#include <cstdio>
++#include <functional>
++#include <random>
++
++namespace {
++using Clock = std::chrono::steady_clock;
++constexpr char IdKey[] = "aegisub-collab-id";
++constexpr int Port = 49215;
++const std::vector<std::string> Settings = {"PlayResX","PlayResY","LayoutResX","LayoutResY","WrapStyle","ScaledBorderAndShadow","YCbCr Matrix"};
++std::string Utf8(wxString const& s) { return s.ToStdString(wxConvUTF8); }
++wxString Wx(std::string const& s) { return wxString::FromUTF8(s); }
++std::string NewId() {
++    static std::random_device rng;
++    const char* hex = "0123456789abcdef";
++    std::string id;
++    for (int i=0;i<32;++i) id += hex[rng() & 15];
++    return id;
++}
++void CheckName(std::string const& s) {
++    if (s.empty() || s.size()>40 || s.find_first_of(",\r\n[]")!=std::string::npos || s.find('\0')!=std::string::npos)
++        throw collab::Conflict("Enter a name (1–40 bytes, without commas or brackets).");
++}
++std::string Identity(AssFile* file, AssDialogue const& line) {
++    for (auto const& e:file->GetExtradata(line.ExtradataIds)) if(e.key==IdKey) return e.value;
++    return {};
++}
++void SetIdentity(AssFile* file, AssDialogue& line, std::string const& id) {
++    std::vector<uint32_t> ids;
++    for (auto const& e:file->GetExtradata(line.ExtradataIds)) if(e.key!=IdKey) ids.push_back(e.id);
++    ids.push_back(file->AddExtradata(IdKey,id)); line.ExtradataIds=ids;
++}
++collab::Line ReadLine(AssDialogue const& x, std::string id) {
++    return {std::move(id), {x.Comment?"1":"0", std::to_string(x.Layer),std::to_string(int(x.Start)),std::to_string(int(x.End)),
++        x.Style.get(),x.Actor.get(),std::to_string(x.Margin[0]),std::to_string(x.Margin[1]),std::to_string(x.Margin[2]),x.Effect.get(),x.Text.get()}};
++}
++void WriteLine(AssDialogue& x, collab::Line const& l) {
++    auto const& f=l.fields;
++    x.Comment=f[0]=="1"; x.Layer=std::stoi(f[1]); x.Start=std::stoi(f[2]); x.End=std::stoi(f[3]);
++    x.Style=f[4]; x.Actor=f[5]; for(int i=0;i<3;++i) x.Margin[i]=std::stoi(f[6+i]); x.Effect=f[9]; x.Text=f[10];
++}
++// All peers parse styles before accepting a state, including the room owner.
++void CheckStyles(collab::Document const& doc) {
++    if(doc.lines.empty() || doc.styles.empty()) throw collab::Conflict("Aegisub rooms need at least one line and one style.");
++    std::set<wxString> names;
++    for(auto const& kv:doc.styles) {
++        AssStyle style(kv.second);
++        if(style.name!=kv.first || !names.insert(Wx(kv.first).Lower()).second)
++            throw collab::Conflict("Invalid or duplicate style name.");
++    }
++}
++using Peer = collab::SocketPeer;}
++
++struct CollaborationController::Impl : wxEvtHandler {
++    agi::Context* c;
++    wxTimer timer{this};
++    wxWeakRef<wxDialog> window;
++    wxTextCtrl *nameBox=nullptr,*addressBox=nullptr,*passwordBox=nullptr;
++    wxStaticText *status=nullptr,*people=nullptr;
++    wxButton *hostButton=nullptr,*joinButton=nullptr,*leaveButton=nullptr;
++    std::unique_ptr<wxSocketServer> listener;
++    std::vector<std::unique_ptr<Peer>> peers;
++    std::unique_ptr<collab::Room> room;
++    collab::Document base, sent;
++    uint32_t revision=0, sequence=0;
++    bool ignoring=false, connected=false, inFlight=false, ticking=false, dirty=false;
++    std::map<int,std::string> nativeIds;
++    std::string name,password;
++    Clock::time_point changed=Clock::now(), heartbeat=Clock::now(), checked=Clock::now();
++    agi::signal::Connection commit, fileOpened;
++
++    explicit Impl(agi::Context* context):c(context) {
++        Bind(wxEVT_TIMER,[this](wxTimerEvent&) {Tick();});
++        commit=c->ass->AddCommitListener([this](int type,const AssDialogue*) {
++            if(ignoring) return;
++            (void)type; // Undo also uses COMMIT_NEW; the file-open signal handles real file changes.
++            changed=Clock::now(); dirty=true;
++        });
++        fileOpened=c->subsController->AddFileOpenListener([this](agi::fs::path const&) {Stop("Disconnected: another subtitle file was opened.");});
++    }
++    ~Impl() {timer.Stop(); peers.clear(); listener.reset(); if(window) {window->Unbind(wxEVT_CLOSE_WINDOW,&Impl::OnClose,this); window->Destroy();}}
++    void OnClose(wxCloseEvent& e) {if(e.CanVeto()) {window->Hide(); e.Veto();} else e.Skip();}
++    void Status(std::string const& text) {if(status) {status->SetLabel(Wx(text)); status->Wrap(430); window->Layout();}}
++    void Buttons() {
++        bool active=listener || !peers.empty();
++        hostButton->Enable(!active); joinButton->Enable(!active); leaveButton->Enable(active);
++        nameBox->Enable(!active); addressBox->Enable(!active); passwordBox->Enable(!active);
++    }
++    void Stop(std::string const& reason) {
++        timer.Stop(); peers.clear(); listener.reset(); room.reset(); connected=false; inFlight=false; ignoring=false; nativeIds.clear(); dirty=false;
++        if(window) {Status(reason); people->SetLabel("Nobody connected"); Buttons();}
++    }
++    void Guard(std::function<void()> fn) {
++        try {fn();}
++        catch(std::exception const& e) {Stop(e.what()); if(window) {window->Show(); window->Raise();}}
++        catch(...) {Stop("Could not sync this project. Local edits are kept."); if(window) window->Show();}
++    }
++    void Show() {
++        if(!window) {
++            window=new wxDialog(c->parent,wxID_ANY,"Collaborate",wxDefaultPosition,wxDefaultSize,wxDEFAULT_DIALOG_STYLE);
++            auto root=new wxBoxSizer(wxVERTICAL);
++            auto title=new wxStaticText(window,wxID_ANY,"Edit subtitles together");
++            auto font=title->GetFont(); font.SetPointSize(font.GetPointSize()+3); font.SetWeight(wxFONTWEIGHT_BOLD); title->SetFont(font);
++            root->Add(title,0,wxALL,16);
++            auto hint=new wxStaticText(window,wxID_ANY,"Connect both PCs to the same Hamachi network first."); root->Add(hint,0,wxLEFT|wxRIGHT|wxBOTTOM,16);
++            auto field=[&](char const* label,wxTextCtrl*& box,long style=0) {
++                root->Add(new wxStaticText(window,wxID_ANY,label),0,wxLEFT|wxRIGHT,16);
++                box=new wxTextCtrl(window,wxID_ANY,"",wxDefaultPosition,wxSize(430,-1),style);
++                root->Add(box,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP|wxBOTTOM,8);
++            };
++            field("Your name",nameBox); nameBox->SetMaxLength(40);
++            field("Hamachi IPv4 address — yours to host, your friend's to join",addressBox);
++            field("Room password — agree on this with your friend",passwordBox,wxTE_PASSWORD);
++            auto buttons=new wxBoxSizer(wxHORIZONTAL);
++            hostButton=new wxButton(window,wxID_ANY,"Host room"); joinButton=new wxButton(window,wxID_ANY,"Join room"); leaveButton=new wxButton(window,wxID_ANY,"Disconnect");
++            for(auto b:{hostButton,joinButton,leaveButton}) buttons->Add(b,1,wxRIGHT,8);
++            root->Add(buttons,0,wxEXPAND|wxALL,16);
++            status=new wxStaticText(window,wxID_ANY,"Open the subtitles you want to share, then host a room."); status->Wrap(430);
++            people=new wxStaticText(window,wxID_ANY,"Nobody connected");
++            root->Add(status,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16); root->Add(people,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
++            window->SetSizerAndFit(root); window->CentreOnParent();
++            window->Bind(wxEVT_CLOSE_WINDOW,&Impl::OnClose,this);
++            hostButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Guard([this]{Start(true);});});
++            joinButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Guard([this]{Start(false);});});
++            leaveButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Stop("Disconnected. Your subtitles stay open.");});
++            Buttons();
++        }
++        window->Show(); window->Raise();
++    }
++    collab::Document Snapshot() {
++        collab::Document doc; std::set<std::string> seen;
++        std::vector<std::pair<AssDialogue*,collab::Line>> assigned;
++        std::map<std::string,int> owners;
++        for(auto const& x:c->ass->Events) {
++            auto it=nativeIds.find(x.Id);
++            if(it!=nativeIds.end()) owners[it->second]=x.Id;
++        }
++        for(auto& x:c->ass->Events) {
++            auto id=Identity(c->ass.get(),x);
++            bool fresh=connected && !nativeIds.count(x.Id);
++            auto record=ReadLine(x,id);
++            if(id.empty() || seen.count(id) || fresh || (owners.count(id) && owners.at(id)!=x.Id)) {
++                id=NewId();
++                auto actor=x.Actor.get(); auto suffix=actor.rfind(" [by ");
++                if(suffix!=std::string::npos && actor.back()==']') actor.resize(suffix);
++                if(actor.rfind("[by ",0)==0) actor.clear();
++                record.id=id;
++                record.fields[5]=actor+(actor.empty()?"":" ")+"[by "+name+"]";
++                assigned.emplace_back(&x,record);
++            }
++            seen.insert(id); doc.lines.push_back(record);
++        }
++        for(auto const& k:Settings) {auto v=c->ass->GetScriptInfo(k); if(!v.empty()) doc.settings[k]=std::string(v);}
++        for(auto const& style:c->ass->Styles) if(!doc.styles.emplace(style.name,style.GetEntryData()).second) throw collab::Conflict("Duplicate style names.");
++        collab::Validate(doc); CheckStyles(doc);
++        if(!assigned.empty()) {
++            for(auto const& pair:assigned) {SetIdentity(c->ass.get(),*pair.first,pair.second.id); pair.first->Actor=pair.second.fields[5];}
++            ignoring=true;
++            c->ass->Commit("Assign collaboration authors",AssFile::COMMIT_EXTRADATA|AssFile::COMMIT_DIAG_META);
++            ignoring=false;
++        }
++        size_t index=0; for(auto const& x:c->ass->Events) nativeIds[x.Id]=doc.lines[index++].id;
++        return doc;
++    }
++    void Apply(collab::Document const& doc) {
++        collab::Validate(doc); CheckStyles(doc);
++        // Prepare allocations and parse all incoming rows before touching the grid.
++        std::map<std::string,AssDialogue*> existing;
++        for(auto& x:c->ass->Events) existing[Identity(c->ass.get(),x)]=&x;
++        std::vector<std::unique_ptr<AssDialogue>> additions;
++        std::vector<AssDialogue*> order;
++        for(auto const& line:doc.lines) {
++            auto it=existing.find(line.id);
++            if(it!=existing.end()) order.push_back(it->second);
++            else {auto x=std::make_unique<AssDialogue>(); WriteLine(*x,line); SetIdentity(c->ass.get(),*x,line.id); order.push_back(x.get()); additions.push_back(std::move(x));}
++        }
++        std::vector<std::unique_ptr<AssStyle>> styles;
++        for(auto const& kv:doc.styles) styles.push_back(std::make_unique<AssStyle>(kv.second));
++        Selection surviving(order.begin(),order.end()), selection;
++        for(auto x:c->selectionController->GetSelectedSet()) if(surviving.count(x)) selection.insert(x);
++        auto active=c->selectionController->GetActiveLine();
++        if(!surviving.count(active)) active=order.empty()?nullptr:order.front();
++        if(selection.empty() && active) selection.insert(active);
++        ignoring=true;
++        // Unlink first; retain objects for unchanged rows, so editing focus survives.
++        std::vector<AssDialogue*> removed;
++        for(auto& x:c->ass->Events) if(!surviving.count(&x)) removed.push_back(&x);
++        c->ass->Events.clear();
++        for(size_t i=0;i<order.size();++i) {WriteLine(*order[i],doc.lines[i]); order[i]->Row=static_cast<int>(i); c->ass->Events.push_back(*order[i]);}
++        for(auto& x:additions) x.release();
++        nativeIds.clear(); for(size_t i=0;i<order.size();++i) nativeIds[order[i]->Id]=doc.lines[i].id;
++        c->selectionController->SetSelectionAndActive(selection,active);
++        for(auto x:removed) delete x;
++        c->ass->Styles.clear_and_dispose([](AssStyle* s){delete s;});
++        for(auto& s:styles) c->ass->Styles.push_back(*s.release());
++        for(auto const& k:Settings) {auto it=doc.settings.find(k); c->ass->SetScriptInfo(k,it==doc.settings.end()?"":it->second);}
++        c->ass->Commit("Receive collaboration edits",AssFile::COMMIT_DIAG_FULL|AssFile::COMMIT_DIAG_ADDREM|AssFile::COMMIT_ORDER|AssFile::COMMIT_STYLES|AssFile::COMMIT_SCRIPTINFO|AssFile::COMMIT_EXTRADATA);
++        ignoring=false;
++    }
++    void Backup() {
++        auto dir=wxStandardPaths::Get().GetUserLocalDataDir()+"/collaboration-backups";
++        if(!wxFileName::Mkdir(dir,wxS_DIR_DEFAULT,wxPATH_MKDIR_FULL) && !wxDirExists(dir)) throw collab::Conflict("Could not create the backup folder.");
++        auto path=dir+"/before-join-"+Wx(NewId())+".ass";
++        AssSubtitleFormat().WriteFile(c->ass.get(),agi::fs::path(Utf8(path)),agi::vfr::Framerate(),"UTF-8");
++    }
++    void Start(bool host) {
++        name=Utf8(nameBox->GetValue().Strip(wxString::both)); CheckName(name);
++        password=Utf8(passwordBox->GetValue());
++        if(password.size()<6 || password.size()>128) throw collab::Conflict("Use a room password between 6 and 128 bytes.");
++        auto ip=addressBox->GetValue().Strip(wxString::both);
++        // Numeric IPv4 only, avoiding a blocking DNS lookup on the editor thread.
++        auto address=Utf8(ip); unsigned a,b,d,e; char rest;
++        if(std::sscanf(address.c_str(),"%u.%u.%u.%u%c",&a,&b,&d,&e,&rest)!=4 || a>255 || b>255 || d>255 || e>255 || a==0 || a>=224)
++            throw collab::Conflict("Enter the Hamachi IPv4 address, for example 25.12.34.56.");
++        wxIPV4address addr; addr.Hostname(ip); addr.Service(Port);
++        if(host) {
++            listener=std::make_unique<wxSocketServer>(addr,wxSOCKET_NOWAIT); listener->Notify(false);
++            if(!listener->IsOk()) throw collab::Conflict("Could not host on that address. Check your Hamachi IP and whether a room is already open.");
++            base=Snapshot(); room=std::make_unique<collab::Room>(base); revision=1; connected=true;
++            Status("Hosting — edits sync automatically. Share your IP and password."); People();
++        }
++        else {
++            if(wxMessageBox("Joining opens the host's subtitles in this window. A backup of your current subtitles will be saved first. Continue?","Join room",wxYES_NO|wxICON_QUESTION,window)!=wxYES) return;
++            Backup();
++            auto socket=new wxSocketClient(wxSOCKET_NOWAIT); peers.push_back(std::make_unique<Peer>(socket)); socket->Connect(addr,false);
++            Status("Connecting…");
++        }
++        changed=heartbeat=Clock::now(); timer.Start(50); Buttons();
++    }
++    void People() {
++        std::string names=name+" (host)";
++        for(auto const& p:peers) if(p->authenticated) names+="\n"+p->name;
++        people->SetLabel(Wx(names)); window->Layout();
++        collab::Writer w; w.String("people"); w.String(names);
++        for(auto& p:peers) if(p->authenticated) p->Queue(w);
++    }
++    void State(Peer& p) {
++        collab::Writer w; w.String("state"); w.Number(static_cast<uint32_t>(room->Revision())); w.Number(p.ack); w.Doc(room->Current()); p.Queue(w);
++    }
++    void Broadcast() {for(auto& p:peers) if(p->authenticated) State(*p);}
++    void Sync() {
++        if(!connected) return;
++        auto current=Snapshot();
++        if(room) {
++            if(room->Apply(revision,current)) {base=room->Current(); revision=static_cast<uint32_t>(room->Revision()); if(current!=base) Apply(base); Broadcast();}
++        }
++        else if(!inFlight && current!=base) {
++            collab::Writer w; w.String("update"); w.Number(revision); w.Number(++sequence); w.Doc(current);
++            peers.front()->Queue(w); sent=current; inFlight=true; Status("Sending edits…");
++        }
++    }
++    void Handle(Peer& p,std::string const& message) {
++        collab::Reader r(message); auto kind=r.String();
++        if(room) {
++            if(!p.authenticated) {
++                if(kind!="hello" || r.Number()!=1) throw collab::Conflict("Incompatible collaboration build.");
++                auto username=r.String(); auto secret=r.String(); r.End(); CheckName(username);
++                if(secret!=password) throw collab::Conflict("Room password did not match.");
++                if(username==name || std::any_of(peers.begin(),peers.end(),[&](auto const& q){return q.get()!=&p && q->authenticated && q->name==username;})) throw collab::Conflict("That name is already in the room.");
++                p.name=username; p.authenticated=true; State(p); People(); return;
++            }
++            if(kind=="update") {
++                auto rev=r.Number(),seq=r.Number(); auto doc=r.Doc(); r.End(); CheckStyles(doc);
++                if(seq!=p.ack+1) throw collab::Conflict("Unexpected update sequence.");
++                Sync(); // Publish the host's local changes before applying a peer update.
++                room->Apply(rev,doc); p.ack=seq; auto current=Snapshot(); base=room->Current(); revision=static_cast<uint32_t>(room->Revision());
++                if(current!=base) Apply(base);
++                Broadcast(); Status("Connected — all received edits are synced."); return;
++            }
++        }
++        else {
++            if(kind=="state") {
++                auto rev=r.Number(),ack=r.Number(); auto doc=r.Doc(); r.End(); CheckStyles(doc);
++                if(inFlight && ack<sequence) return; // Our ordered acknowledgement includes these earlier states.
++                if(ack>sequence || (connected && rev<revision)) throw collab::Conflict("Invalid room revision.");
++                if(!connected) {Apply(doc); connected=true;}
++                else {
++                    auto current=Snapshot(); auto merged=collab::Merge(inFlight?sent:base,current,doc);
++                    if(merged!=current) Apply(merged);
++                }
++                base=doc; revision=rev; inFlight=false; dirty=true; Status("Connected — edits sync automatically."); return;
++            }
++            if(kind=="people") {auto names=r.String(); r.End(); if(names.size()>2048) throw collab::Conflict("Invalid room list."); people->SetLabel(Wx(names)); window->Layout(); return;}
++            if(kind=="error") {auto why=r.String(); r.End(); throw collab::Conflict(why);}
++        }
++        if(kind=="ping") {r.End(); collab::Writer w; w.String("pong"); p.Queue(w); return;}
++        if(kind=="pong") {r.End(); return;}
++        throw collab::Conflict("Unexpected room message.");
++    }
++    void Tick() {
++        if(ticking) return;
++        ticking=true;
++        Guard([this] {
++            if(listener) {
++                if(auto socket=listener->Accept(false)) {
++                    if(peers.size()>=8) delete socket;
++                    else peers.push_back(std::make_unique<Peer>(socket));
++                }
++            }
++            auto now=Clock::now();
++            for(auto it=peers.begin();it!=peers.end();) {
++                auto& p=**it;
++                try {
++                    if(!room && !p.hello && p.socket->IsConnected()) {
++                        collab::Writer w; w.String("hello"); w.Number(1); w.String(name); w.String(password); p.Queue(w); p.hello=true;
++                    }
++                    for(auto const& message:p.Read()) Handle(p,message);
++                    p.Flush();
++                    if(now-p.last>std::chrono::seconds(20)) throw collab::Conflict("Connection timed out. Local edits are kept.");
++                    if((p.authenticated || connected) && !p.socket->IsConnected()) throw collab::Conflict("Connection lost. Local edits are kept.");
++                    ++it;
++                }
++                catch(std::exception const& e) {
++                    if(!room) throw;
++                    collab::Writer error; error.String("error"); error.String(e.what());
++                    try {p.Queue(error); p.Flush();} catch(...) {}
++                    it=peers.erase(it); People(); Status(std::string("A guest disconnected: ")+e.what());
++                }
++            }
++            if((dirty && now-changed>=std::chrono::milliseconds(250) && now-checked>=std::chrono::milliseconds(250)) || now-checked>=std::chrono::seconds(10)) {
++                Sync(); checked=now;
++                if(!inFlight) dirty=false;
++            }
++            if(now-heartbeat>std::chrono::seconds(5)) {
++                collab::Writer w; w.String("ping"); for(auto& p:peers) if(p->authenticated || connected) p->Queue(w); heartbeat=now;
++            }
++        });
++        ignoring=false; ticking=false;
++    }
++};
++CollaborationController::CollaborationController(agi::Context* c):impl(std::make_unique<Impl>(c)) {}
++CollaborationController::~CollaborationController()=default;
++void CollaborationController::Show() {impl->Show();}
+diff --git a/src/collaboration_controller.h b/src/collaboration_controller.h
+new file mode 100644
+index 0000000..8b24adc
+--- /dev/null
++++ b/src/collaboration_controller.h
+@@ -0,0 +1,12 @@
++// Copyright (c) 2026 OpenAI. SPDX-License-Identifier: BSD-3-Clause
++#pragma once
++#include <memory>
++namespace agi { struct Context; }
++class CollaborationController {
++    struct Impl;
++    std::unique_ptr<Impl> impl;
++public:
++    explicit CollaborationController(agi::Context*);
++    ~CollaborationController();
++    void Show();
++};
+diff --git a/src/command/collaboration.cpp b/src/command/collaboration.cpp
+new file mode 100644
+index 0000000..8ca865b
+--- /dev/null
++++ b/src/command/collaboration.cpp
+@@ -0,0 +1,17 @@
++// Copyright (c) 2026 OpenAI. SPDX-License-Identifier: BSD-3-Clause
++#include "command.h"
++#include "../collaboration_controller.h"
++#include "../include/aegisub/context.h"
++namespace {
++struct session final : cmd::Command {
++    CMD_NAME("collab/session")
++    STR_MENU("&Collaborate…")
++    STR_DISP("Collaborate")
++    STR_HELP("Host or join a live subtitle editing room")
++    void operator()(agi::Context* c) override {
++        if(!c->collaboration) c->collaboration=std::make_unique<CollaborationController>(c);
++        c->collaboration->Show();
++    }
++};
++}
++namespace cmd { void init_collaboration() {reg(std::make_unique<session>());} }
+diff --git a/src/command/command.cpp b/src/command/command.cpp
+index 3b97915..30bcabd 100644
+--- a/src/command/command.cpp
++++ b/src/command/command.cpp
+@@ -77,6 +77,7 @@ std::vector<std::string_view> get_registered_commands() {
+ void init_app();
+ void init_audio();
+ void init_automation();
++void init_collaboration();
+ void init_command();
+ void init_edit();
+ void init_grid();
+@@ -95,6 +96,7 @@ void init_builtin_commands() {
+ 	init_app();
+ 	init_audio();
+ 	init_automation();
++	init_collaboration();
+ 	init_edit();
+ 	init_grid();
+ 	init_help();
+diff --git a/src/context.cpp b/src/context.cpp
+index defa496..b1dc11f 100644
+--- a/src/context.cpp
++++ b/src/context.cpp
+@@ -17,6 +17,7 @@
+ #include "include/aegisub/context.h"
+ 
+ #include "ass_file.h"
++#include "collaboration_controller.h"
+ #include "audio_controller.h"
+ #include "auto4_base.h"
+ #include "dialog_manager.h"
+diff --git a/src/frame_main.cpp b/src/frame_main.cpp
+index f96836b..27abb40 100644
+--- a/src/frame_main.cpp
++++ b/src/frame_main.cpp
+@@ -32,6 +32,7 @@
+ /// @ingroup main_ui
+ 
+ #include "frame_main.h"
++#include "collaboration_controller.h"
+ 
+ #include "include/aegisub/context.h"
+ #include "include/aegisub/menu.h"
+@@ -321,6 +322,7 @@ void FrameMain::OnCloseWindow(wxCloseEvent &event) {
+ 		return;
+ 	}
+ 
++	context->collaboration.reset();
+ 	context->dialog.reset();
+ 
+ 	// Store maximization state
+diff --git a/src/include/aegisub/context.h b/src/include/aegisub/context.h
+index 361dcf9..3cb8ed2 100644
+--- a/src/include/aegisub/context.h
++++ b/src/include/aegisub/context.h
+@@ -16,6 +16,7 @@
+ 
+ #include <memory>
+ 
++class CollaborationController;
+ class AssFile;
+ class AudioBox;
+ class AudioController;
+@@ -66,6 +67,8 @@ struct Context {
+ 	FrameMain *frame = nullptr;
+ 	VideoDisplay *videoDisplay = nullptr;
+ 
++	std::unique_ptr<CollaborationController> collaboration;
++
+ 	Context();
+ 	~Context();
+ };
+diff --git a/src/libresrc/default_hotkey.json b/src/libresrc/default_hotkey.json
+index 1f684f9..f649724 100644
+--- a/src/libresrc/default_hotkey.json
++++ b/src/libresrc/default_hotkey.json
+@@ -107,6 +107,7 @@
+ 		]
+ 	},
+ 	"Default" : {
++		"collab/session" : ["Ctrl-Shift-J"],
+ 		"app/exit" : [
+ 			"Ctrl-Q"
+ 		],
+diff --git a/src/libresrc/default_menu_platform.json b/src/libresrc/default_menu_platform.json
+index 710f5c5..aa3bfd1 100644
+--- a/src/libresrc/default_menu_platform.json
++++ b/src/libresrc/default_menu_platform.json
+@@ -42,6 +42,8 @@
+         { "command" : "edit/find_replace" }
+     ],
+     "main/subtitle" : [
++        { "command" : "collab/session" },
++        {},
+         { "command" : "tool/style/manager" },
+         { "command" : "tool/style/assistant" },
+         { "command" : "tool/translation_assistant" },
+diff --git a/src/libresrc/osx/default_menu.json b/src/libresrc/osx/default_menu.json
+index 5e2a8a7..18a33ed 100644
+--- a/src/libresrc/osx/default_menu.json
++++ b/src/libresrc/osx/default_menu.json
+@@ -46,6 +46,8 @@
+         { "command" : "subtitle/spellcheck" }
+     ],
+     "main/subtitle" : [
++        { "command" : "collab/session" },
++        {},
+         { "command" : "tool/style/manager" },
+         { "command" : "tool/style/assistant" },
+         { "command" : "tool/translation_assistant" },
+diff --git a/src/meson.build b/src/meson.build
+index b5350d7..8f850d6 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -9,6 +9,9 @@ aegisub_src = files(
+     'ass_export_filter.cpp',
+     'ass_exporter.cpp',
+     'ass_file.cpp',
++    'collaboration/document.cpp',
++    'collaboration_controller.cpp',
++    'command/collaboration.cpp',
+     'ass_karaoke.cpp',
+     'ass_override.cpp',
+     'ass_parser.cpp',
+diff --git a/tests/collaboration_core.cpp b/tests/collaboration_core.cpp
+new file mode 100644
+index 0000000..7899e7c
+--- /dev/null
++++ b/tests/collaboration_core.cpp
+@@ -0,0 +1,38 @@
++// Copyright (c) 2026 OpenAI. SPDX-License-Identifier: BSD-3-Clause
++#include "../src/collaboration/document.h"
++#include <iostream>
++#include <cstdlib>
++using namespace collab;
++void Check(bool v) {if(!v) throw std::runtime_error("test failed");}
++template<class F> void Fails(F f) {bool failed=false; try{f();}catch(Conflict const&){failed=true;} Check(failed);}
++Line L(char id,std::string text) {return {std::string(32,id),{"0","0","1000","2000","Default","[by Jake]","0","0","0","",std::move(text)}};}
++int main() {
++ try {
++ Document b{{L('a',"{\\pos(960,540)}日本語"),L('b',"second")},{{"PlayResX","1920"},{"PlayResY","1080"}},{{"Default","Style: Default"}}};
++ Room room(b); auto a=b,c=b; a.lines[0].fields[10]="A"; c.lines[1].fields[10]="B";
++ room.Apply(1,a); room.Apply(1,c); Check(room.Current().lines[0].fields[10]=="A" && room.Current().lines[1].fields[10]=="B");
++ auto revision=room.Revision(); Check(!room.Apply(1,c)); Check(room.Revision()==revision);
++ c.lines[0].fields[10]="conflict"; auto before=room.Current(); Fails([&]{room.Apply(1,c);}); Check(room.Current()==before);
++ a=b;c=b; a.lines.insert(a.lines.begin()+1,L('c',"same")); c.lines.insert(c.lines.begin()+1,L('d',"same"));
++ auto merged=Merge(b,c,a); Check(merged.lines.size()==4 && merged.lines[1].id==std::string(32,'c') && merged.lines[2].id==std::string(32,'d'));
++ a=b;a.lines.erase(a.lines.begin()); Check(Merge(b,b,a).lines.size()==1);
++ c=b;c.lines[0].fields[10]="edited"; Fails([&]{Merge(b,c,a);});
++ a=b;a.lines.clear(); Check(Merge(b,b,a).lines.empty());
++ a=b;c=b;a.lines[0].fields[5]="actor"; c.lines[0].fields[10]="text"; merged=Merge(b,c,a); Check(merged.lines[0].fields[5]=="actor" && merged.lines[0].fields[10]=="text");
++ a=b;c=b;a.settings["PlayResX"]="1280";a.settings["PlayResY"]="720";c.lines[0].fields[10]="text"; Check(Merge(b,c,a).settings==a.settings);
++ c.settings["PlayResX"]="3840"; Fails([&]{Merge(b,c,a);});
++ a=b;c=b; a.styles["Another"]="style A"; c.styles["Third"]="style B"; Check(Merge(b,c,a).styles.size()==3);
++ a=b;std::swap(a.lines[0],a.lines[1]); Fails([&]{Merge(b,a,b);});
++ a=b;a.lines.push_back(a.lines[0]);Fails([&]{Validate(a);});
++ a=b;a.lines[0].fields[3]="0";Fails([&]{Validate(a);});
++ Room replay(b);a=b;a.lines.push_back(L('e',"new"));replay.Apply(1,a);auto created=replay.Revision();replay.Apply(created,b);Fails([&]{replay.Apply(1,a);});
++ Room bounded(b); for(int i=0;i<40;++i) {auto next=bounded.Current(); next.lines[0].fields[10]=std::to_string(i); bounded.Apply(bounded.Revision(),next);} Fails([&]{bounded.Apply(1,b);});
++ a=b; a.styles[std::string("bad\0name",8)]="Style: Default"; Fails([&]{Validate(a);});
++ a=b; a.lines[0].fields[10]=std::string(100001,'x'); Fails([&]{Validate(a);});
++ Writer w;w.Doc(b);Reader r(w.Bytes());Check(r.Doc()==b);r.End();
++ for(size_t n=0;n<w.Bytes().size();++n){auto truncated=w.Bytes().substr(0,n);Fails([&]{Reader rr(truncated);rr.Doc();rr.End();});}
++ auto trailing=w.Bytes()+"x";Fails([&]{Reader rr(trailing);rr.Doc();rr.End();});
++ std::string enormous(4,'\xff');Fails([&]{Reader rr(enormous);rr.Doc();});
++ std::cout<<"Native collaboration core checks passed (merge, conflicts, deletion, replay, styles/resolution, bounded wire format).\n";
++ }catch(std::exception const& e){std::cerr<<e.what()<<'\n';return EXIT_FAILURE;}
++}
+diff --git a/tests/collaboration_transport.cpp b/tests/collaboration_transport.cpp
+new file mode 100644
+index 0000000..18b20a0
+--- /dev/null
++++ b/tests/collaboration_transport.cpp
+@@ -0,0 +1,49 @@
++// Copyright (c) 2026 OpenAI. SPDX-License-Identifier: BSD-3-Clause
++#include "../src/collaboration/transport.h"
++#include <wx/init.h>
++#include <iostream>
++#include <thread>
++using namespace collab;
++void Check(bool value,char const* why) {if(!value) throw std::runtime_error(why);}
++std::string Receive(SocketPeer& peer) {
++    auto deadline=Clock::now()+std::chrono::seconds(3);
++    while(Clock::now()<deadline) {
++        auto messages=peer.Read();
++        if(!messages.empty()) {Check(messages.size()==1,"expected one frame"); return messages.front();}
++        std::this_thread::sleep_for(std::chrono::milliseconds(1));
++    }
++    throw std::runtime_error("loopback receive timed out");
++}
++int main() {
++    try {
++        wxInitializer init; Check(init.IsOk(),"wx initialization");
++        wxIPV4address address; address.Hostname("127.0.0.1"); address.Service(0);
++        wxSocketServer server(address,wxSOCKET_NOWAIT); server.Notify(false); Check(server.IsOk(),"listen");
++        server.GetLocal(address);
++        auto client=new wxSocketClient(wxSOCKET_NOWAIT); SocketPeer guest(client);
++        client->Connect(address,false);
++        Check(server.WaitForAccept(3),"accept timeout");
++        SocketPeer host(server.Accept(false));
++        Check(client->WaitOnConnect(3),"connect timeout");
++        Writer hello; hello.String("hello"); hello.Number(1); hello.String("字幕 editor"); hello.String("test password");
++        guest.Queue(hello); guest.Flush(); Check(Receive(host)==hello.Bytes(),"hello round trip");
++        Document doc; Line line{std::string(32,'a'),{"0","0","0","1000","Default","[by Jake]","0","0","0","","こんにちは {\\i1}world"}};
++        doc.lines.push_back(line); doc.settings={{"PlayResX","1920"},{"PlayResY","1080"}};
++        Writer state; state.String("state"); state.Number(1); state.Number(0); state.Doc(doc);
++        host.Queue(state); host.Flush(); auto bytes=Receive(guest); Reader r(bytes);
++        Check(r.String()=="state" && r.Number()==1 && r.Number()==0 && r.Doc()==doc,"state round trip"); r.End();
++        // A frame split across multiple TCP writes must not be applied early.
++        Writer header; header.Number(static_cast<uint32_t>(state.Bytes().size())); auto frame=header.Bytes()+state.Bytes();
++        host.socket->Write(frame.data(),2); std::this_thread::sleep_for(std::chrono::milliseconds(10));
++        Check(guest.Read().empty(),"partial header accepted");
++        host.socket->Write(frame.data()+2,7); std::this_thread::sleep_for(std::chrono::milliseconds(10));
++        Check(guest.Read().empty(),"partial payload accepted");
++        host.socket->Write(frame.data()+9,static_cast<wxUint32>(frame.size()-9));
++        Check(Receive(guest)==state.Bytes(),"fragmented frame");
++        Writer invalid; invalid.Number(MaxFrame+1); host.socket->Write(invalid.Bytes().data(),4);
++        bool rejected=false; try {Receive(guest);} catch(Conflict const&) {rejected=true;}
++        Check(rejected,"oversized frame accepted");
++        std::cout<<"Native TCP checks passed (connection, UTF-8, document round trip, fragmentation, size limits).\n";
++    }
++    catch(std::exception const& e) {std::cerr<<e.what()<<'\n'; return 1;}
++}
+diff --git a/tests/meson.build b/tests/meson.build
+index a6dcb30..5b42c0b 100644
+--- a/tests/meson.build
++++ b/tests/meson.build
+@@ -85,3 +85,8 @@ test_setup = custom_target('setup-test-data',
+ 
+ test('gtest main', runner, env: {'AEGISUB_TEST_DATA_DIR': meson.current_source_dir()}, depends: test_setup)
+ test('luajit-52', executable('luajit-52', 'tests/luajit_52.c', dependencies: luajit))
++
++collaboration_tests = executable('collaboration-core',
++    'collaboration_core.cpp', '../src/collaboration/document.cpp',
++    cpp_args: tests_args)
++test('collaboration core', collaboration_tests)
+-- 
+2.51.1
+
