@@ -1,5 +1,6 @@
 // Copyright (c) 2026 OpenAI. SPDX-License-Identifier: BSD-3-Clause
 #include "sha256.h"
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <fstream>
