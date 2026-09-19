@@ -251,7 +251,11 @@ struct CollaborationController::Impl : wxEvtHandler {
         });
         fileOpened=c->subsController->AddFileOpenListener([this](agi::fs::path const&) {Stop("Disconnected: another subtitle file was opened.");});
         videoOpened=c->project->AddVideoProviderListener([this](AsyncVideoProvider*) {
-            if(room) for(auto& p:peers) if(p->authenticated) SendMediaOffer(*p);
+            if(room) {
+                for(auto& p:peers) {
+                    if(p->authenticated) SendMediaOffer(*p);
+                }
+            }
         });
         activeLineChanged=c->selectionController->AddActiveLineListener([this](AssDialogue* line) {
             localLineId=line?Identity(c->ass.get(),*line):std::string();
@@ -953,7 +957,9 @@ https://github.com/arcusmaximus/YTSubConverter
             if(current!=base) {localUndo=base; localUndoRevision=revision;}
             if(room->Apply(revision,current)) {
                 base=room->Current(); revision=static_cast<uint32_t>(room->Revision()); localTyping=false; presenceDirty=true;
-                if(current!=base) Apply(base); Broadcast(); Buttons();
+                if(current!=base) Apply(base);
+                Broadcast();
+                Buttons();
             }
         }
         else if(!inFlight && current!=base && !peers.empty()) {
@@ -1177,7 +1183,11 @@ https://github.com/arcusmaximus/YTSubConverter
                 if(room) People();
             }
             if(now-heartbeat>std::chrono::seconds(5)) {
-                collab::Writer w; w.String("ping"); for(auto& p:peers) if(p->authenticated || connected) p->Queue(w); heartbeat=now;
+                collab::Writer w; w.String("ping");
+                for(auto& p:peers) {
+                    if(p->authenticated || connected) p->Queue(w);
+                }
+                heartbeat=now;
             }
         });
         ignoring=false; ticking=false;
