@@ -128,3 +128,13 @@ reconnection, room chat and line notes with @mentions, a conflict decision
 dialog, a guarded "Undo my last synced edit" action, per-user colors, separate
 viewing/typing presence, and colored remote playhead markers on the video
 slider. Viewers receive room changes but cannot submit subtitle edits.
+
+
+## v3 media transfer reliability
+
+Room video offers now include a SHA-256 digest. Matching local files and
+completed downloads are verified cryptographically before use. Partial media
+downloads use a stable hash-based filename and are kept across connection
+interruptions; the next offer requests only the missing byte range. The
+Collaborate tab also provides a Cancel media transfer button. Canceling keeps
+the partial file so a later transfer can resume.

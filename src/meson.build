@@ -10,6 +10,7 @@ aegisub_src = files(
     'ass_exporter.cpp',
     'ass_file.cpp',
     'collaboration/document.cpp',
+    'collaboration/sha256.cpp',
     'collaboration_controller.cpp',
     'command/collaboration.cpp',
     'ass_karaoke.cpp',
