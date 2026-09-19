@@ -356,7 +356,7 @@ struct GridColumnYTCompatibility final : GridColumn {
     wxString Value(const AssDialogue *d, const agi::Context *c) const override {
         if(!c->collaboration) return {};
         auto n=c->collaboration->YTWarningCount(d);
-        return n?wxString("!")+std::to_wstring(n):wxString("OK");
+        return n ? wxString::Format("!%d", n) : wxString("OK");
     }
     int Width(const agi::Context *, WidthHelper &helper) const override {return helper("!99");}
     void Paint(wxDC &dc,int x,int y,const AssDialogue *d,const agi::Context *c) const override {
