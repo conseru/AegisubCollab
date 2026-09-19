@@ -2,6 +2,9 @@
 #pragma once
 #include <memory>
 #include <string>
+#include <cstdint>
+#include <utility>
+#include <vector>
 namespace agi { struct Context; }
 class AssDialogue;
 class CollaborationController {
@@ -14,4 +17,7 @@ public:
     std::string AuthorFor(AssDialogue const*) const;
     std::string LastEditorFor(AssDialogue const*) const;
     std::string PresenceFor(AssDialogue const*) const;
+    uint32_t PresenceColorFor(AssDialogue const*) const;
+    uint32_t UserColor(std::string const&) const;
+    std::vector<std::pair<std::string,int>> RemotePlayheads() const;
 };

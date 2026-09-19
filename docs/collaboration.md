@@ -119,3 +119,12 @@ set for lines created during a collaboration room. Last edit updates whenever a
 collaborator changes that line. Live lists users whose active line is that row.
 Presence and playhead updates are ephemeral room state and are not written into
 subtitle text.
+
+
+## v3 collaboration coordination
+
+The next collaboration protocol adds editor/viewer roles, automatic guest
+reconnection, room chat and line notes with @mentions, a conflict decision
+dialog, a guarded "Undo my last synced edit" action, per-user colors, separate
+viewing/typing presence, and colored remote playhead markers on the video
+slider. Viewers receive room changes but cannot submit subtitle edits.

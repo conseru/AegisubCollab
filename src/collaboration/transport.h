@@ -8,7 +8,7 @@ namespace collab {
 using Clock = std::chrono::steady_clock;
 struct SocketPeer {
     std::unique_ptr<wxSocketBase> socket;
-    std::string input, output, name;
+    std::string input, output, name, role="Editor";
     uint32_t ack=0;
     bool authenticated=false, hello=false;
     Clock::time_point last=Clock::now();

@@ -372,7 +372,16 @@ struct GridColumnCollabPresence final : GridColumn {
     wxString Value(const AssDialogue *d, const agi::Context *c) const override {
         return c->collaboration ? to_wx(c->collaboration->PresenceFor(d)) : wxString();
     }
-    int Width(const agi::Context *, WidthHelper &helper) const override {return helper("WWWWWWWWWWWWWW");}
+    int Width(const agi::Context *, WidthHelper &helper) const override {return helper("WWWWWWWWWWWWWWWW");}
+    void Paint(wxDC &dc, int x, int y, const AssDialogue *d, const agi::Context *c) const override {
+        auto old=dc.GetTextForeground();
+        if(c->collaboration) {
+            auto rgb=c->collaboration->PresenceColorFor(d);
+            if(rgb) dc.SetTextForeground(wxColour((rgb>>16)&255,(rgb>>8)&255,rgb&255));
+        }
+        GridColumn::Paint(dc,x,y,d,c);
+        dc.SetTextForeground(old);
+    }
 };
 
 class GridColumnText final : public GridColumn {

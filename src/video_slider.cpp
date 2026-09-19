@@ -37,6 +37,7 @@
 #include "async_video_provider.h"
 #include "base_grid.h"
 #include "command/command.h"
+#include "collaboration_controller.h"
 #include "include/aegisub/context.h"
 #include "include/aegisub/hotkey.h"
 #include "options.h"
@@ -223,6 +224,17 @@ void VideoSlider::OnPaint(wxPaintEvent &) {
 		for (int frame : keyframes) {
 			curX = GetXAtValue(frame);
 			dc.DrawLine(curX,2,curX,8);
+		}
+	}
+
+	// Draw collaborator playheads behind the local cursor.
+	if (c->collaboration) {
+		for (auto const& marker : c->collaboration->RemotePlayheads()) {
+			int mx=GetXAtValue(marker.second);
+			auto rgb=c->collaboration->UserColor(marker.first);
+			dc.SetPen(wxPen(wxColour((rgb>>16)&255,(rgb>>8)&255,rgb&255),2));
+			dc.DrawLine(mx,1,mx,h-2);
+			dc.DrawText(to_wx(marker.first),std::min(mx+3,std::max(0,w-80)),1);
 		}
 	}
 

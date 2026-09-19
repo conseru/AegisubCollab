@@ -20,6 +20,7 @@
 #include <wx/checkbox.h>
 #include <wx/choice.h>
 #include <wx/dialog.h>
+#include <wx/msgdlg.h>
 #include <wx/notebook.h>
 #include <wx/panel.h>
 #include <wx/filename.h>
@@ -38,6 +39,7 @@
 #include <fstream>
 #include <functional>
 #include <random>
+#include <optional>
 
 namespace {
 using Clock = std::chrono::steady_clock;
@@ -135,18 +137,24 @@ struct CollaborationController::Impl : wxEvtHandler {
     agi::Context* c;
     wxTimer timer{this};
     wxWeakRef<wxDialog> window;
-    wxTextCtrl *nameBox=nullptr,*addressBox=nullptr,*passwordBox=nullptr;
+    wxTextCtrl *nameBox=nullptr,*addressBox=nullptr,*passwordBox=nullptr,*chatLog=nullptr,*chatInput=nullptr;
     wxStaticText *status=nullptr,*people=nullptr,*recent=nullptr;
-    wxButton *hostButton=nullptr,*joinButton=nullptr,*leaveButton=nullptr;
+    wxButton *hostButton=nullptr,*joinButton=nullptr,*leaveButton=nullptr,*undoMineButton=nullptr,*chatSendButton=nullptr,*lineNoteButton=nullptr;
     wxCheckBox *autoMediaBox=nullptr;
-    wxChoice *followChoice=nullptr;
-    struct PresenceInfo {std::string lineId; int frame=-1;};
+    wxChoice *followChoice=nullptr,*roleChoice=nullptr;
+    struct PresenceInfo {std::string lineId; int frame=-1; bool typing=false;};
     std::map<Peer*,PresenceInfo> peerPresence;
     std::map<std::string,PresenceInfo> roomPresence;
     std::string localLineId;
     int localFrame=-1;
-    bool presenceDirty=false;
+    bool presenceDirty=false, localTyping=false;
     Clock::time_point presenceSent=Clock::now();
+    std::optional<collab::Document> localUndo;
+    uint32_t localUndoRevision=0;
+    wxIPV4address guestAddress;
+    bool reconnecting=false, manualDisconnect=false;
+    int reconnectAttempts=0;
+    Clock::time_point reconnectAt=Clock::now(), reconnectStarted=Clock::now();
     struct MediaSend {
         std::ifstream file;
         uint64_t size=0, sent=0;
@@ -183,6 +191,7 @@ struct CollaborationController::Impl : wxEvtHandler {
             if(ignoring) return;
             (void)type; // Undo also uses COMMIT_NEW; the file-open signal handles real file changes.
             changed=Clock::now(); dirty=true;
+            if(connected) {localTyping=true; presenceDirty=true;}
         });
         fileOpened=c->subsController->AddFileOpenListener([this](agi::fs::path const&) {Stop("Disconnected: another subtitle file was opened.");});
         videoOpened=c->project->AddVideoProviderListener([this](AsyncVideoProvider*) {
@@ -191,7 +200,7 @@ struct CollaborationController::Impl : wxEvtHandler {
         activeLineChanged=c->selectionController->AddActiveLineListener([this](AssDialogue* line) {
             localLineId=line?Identity(c->ass.get(),*line):std::string();
             presenceDirty=true;
-            if(c->subsGrid) c->subsGrid->Refresh(false);
+            if(c->subsGrid) c->subsGrid->Refresh(false); if(c->videoSlider) c->videoSlider->Refresh(false);
         });
         videoSeek=c->videoController->AddSeekListener([this](int frame) {
             localFrame=frame; presenceDirty=true;
@@ -215,11 +224,16 @@ struct CollaborationController::Impl : wxEvtHandler {
         hostButton->Enable(!active); joinButton->Enable(!active); leaveButton->Enable(active);
         nameBox->Enable(!active); addressBox->Enable(!active); passwordBox->Enable(!active);
         if(autoMediaBox) autoMediaBox->Enable(!active);
+        if(roleChoice) roleChoice->Enable(!active);
+        if(undoMineButton) undoMineButton->Enable(active && localUndo.has_value());
+        if(chatSendButton) chatSendButton->Enable(active);
+        if(lineNoteButton) lineNoteButton->Enable(active);
     }
     void ResetFollow() {
-        roomPresence.clear(); peerPresence.clear(); localLineId.clear(); localFrame=-1; presenceDirty=false;
+        roomPresence.clear(); peerPresence.clear(); localLineId.clear(); localFrame=-1; presenceDirty=false; localTyping=false;
+        reconnecting=false; reconnectAttempts=0;
         if(followChoice) {followChoice->Clear(); followChoice->Append("Do not follow"); followChoice->SetSelection(0);}
-        if(c->subsGrid) c->subsGrid->Refresh(false);
+        if(c->subsGrid) c->subsGrid->Refresh(false); if(c->videoSlider) c->videoSlider->Refresh(false);
     }
     void Stop(std::string const& reason) {
         timer.Stop(); ClearMediaReceive(true); mediaSends.clear(); offeredMediaName.clear(); offeredMediaSize=0;
@@ -228,6 +242,7 @@ struct CollaborationController::Impl : wxEvtHandler {
         if(window) {Status(reason); people->SetLabel("Not in a room"); Buttons();}
     }
     void Goodbye() noexcept {
+        manualDisconnect=true;
         try {
             if(room) {
                 collab::Writer w; w.String("room-closed"); w.String(name);
@@ -237,6 +252,62 @@ struct CollaborationController::Impl : wxEvtHandler {
                 collab::Writer w; w.String("leave"); peers.front()->Queue(w); peers.front()->Flush();
             }
         } catch(...) {}
+    }
+    uint32_t ColorFor(std::string const& who) const {
+        static uint32_t const palette[]={0x2D7FF9,0xD94FD5,0x27A96B,0xE67E22,0x8E5BD9,0xE74C3C,0x16A2B8,0xB58B00};
+        uint32_t hash=2166136261u; for(unsigned char ch:who) {hash^=ch; hash*=16777619u;}
+        return palette[hash%(sizeof(palette)/sizeof(palette[0]))];
+    }
+    void AppendChat(std::string const& who,std::string const& text,std::string const& lineId={}) {
+        if(!chatLog) return;
+        std::string where;
+        if(!lineId.empty()) {
+            int row=-1;
+            for(auto const& line:c->ass->Events) if(Identity(c->ass.get(),line)==lineId) {row=line.Row+1; break;}
+            if(row>0) where=" [line "+std::to_string(row)+"]";
+        }
+        chatLog->AppendText(Wx(who+where+": "+text+"\n"));
+        if(!name.empty() && who!=name && text.find("@"+name)!=std::string::npos)
+            Notice(who+" mentioned you.");
+    }
+    void SendChat(bool lineNote) {
+        if(!connected || !chatInput) return;
+        auto text=Utf8(chatInput->GetValue().Strip(wxString::both));
+        if(text.empty()) return;
+        if(text.size()>1000) {Notice("Chat message is too long."); return;}
+        auto lineId=lineNote?RowLineId(c->selectionController->GetActiveLine()):std::string();
+        if(room) {
+            AppendChat(name,text,lineId);
+            collab::Writer w; w.String("chat-event"); w.String(name); w.String(text); w.String(lineId);
+            for(auto& p:peers) if(p->authenticated) p->Queue(w);
+        }
+        else if(!peers.empty()) {
+            collab::Writer w; w.String("chat"); w.String(text); w.String(lineId); peers.front()->Queue(w);
+        }
+        chatInput->Clear();
+    }
+    void UndoMine() {
+        if(!connected || !localUndo) {Notice("Nothing safe to undo yet."); return;}
+        if(revision!=localUndoRevision+1) {Notice("Your last edit can no longer be undone safely because the room changed."); localUndo.reset(); Buttons(); return;}
+        auto target=*localUndo; localUndo.reset();
+        Apply(target); dirty=true; changed=Clock::now(); localTyping=true; presenceDirty=true; Buttons();
+        Status("Undoing your last synced edit...");
+    }
+    void BeginReconnect(std::string const& why) {
+        if(manualDisconnect || room) {Stop(why); return;}
+        if(!reconnecting) Notice("Connection lost - reconnecting...");
+        reconnecting=true; connected=false; inFlight=false; peers.clear();
+        reconnectAt=Clock::now()+std::chrono::seconds(1); reconnectStarted=Clock::now();
+        Status("Connection lost - reconnecting...");
+    }
+    void TryReconnect() {
+        if(!reconnecting || !peers.empty()) return;
+        if(++reconnectAttempts>10) {reconnecting=false; Stop("Could not reconnect after 10 attempts. Local edits are kept."); return;}
+        auto socket=new wxSocketClient(wxSOCKET_NOWAIT);
+        peers.push_back(std::make_unique<Peer>(socket));
+        socket->Connect(guestAddress,false);
+        reconnectStarted=Clock::now();
+        Status("Reconnecting... attempt "+std::to_string(reconnectAttempts)+"/10");
     }
     void Guard(std::function<void()> fn) {
         try {fn();}
@@ -263,6 +334,9 @@ struct CollaborationController::Impl : wxEvtHandler {
             field("Your name",nameBox); nameBox->SetMaxLength(40);
             field("Hamachi IPv4 address - yours to host, your friend's to join",addressBox);
             field("Room password - agree on this with your friend",passwordBox,wxTE_PASSWORD);
+            collabRoot->Add(new wxStaticText(collabPage,wxID_ANY,"Join role"),0,wxLEFT|wxRIGHT,16);
+            roleChoice=new wxChoice(collabPage,wxID_ANY); roleChoice->Append("Editor"); roleChoice->Append("Viewer"); roleChoice->SetSelection(0);
+            collabRoot->Add(roleChoice,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP|wxBOTTOM,8);
             autoMediaBox=new wxCheckBox(collabPage,wxID_ANY,"Automatically download and open the host's video if mine does not match");
             autoMediaBox->SetValue(true);
             collabRoot->Add(autoMediaBox,0,wxLEFT|wxRIGHT|wxBOTTOM,16);
@@ -278,7 +352,20 @@ struct CollaborationController::Impl : wxEvtHandler {
             collabRoot->Add(new wxStaticText(collabPage,wxID_ANY,"Follow collaborator playhead"),0,wxLEFT|wxRIGHT,16);
             followChoice=new wxChoice(collabPage,wxID_ANY); followChoice->Append("Do not follow"); followChoice->SetSelection(0);
             collabRoot->Add(followChoice,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP|wxBOTTOM,8);
-            collabRoot->Add(recent,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
+            undoMineButton=new wxButton(collabPage,wxID_ANY,"Undo my last synced edit");
+            collabRoot->Add(undoMineButton,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
+            collabRoot->Add(recent,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
+
+            collabRoot->Add(new wxStaticText(collabPage,wxID_ANY,"Room chat / line notes"),0,wxLEFT|wxRIGHT,16);
+            chatLog=new wxTextCtrl(collabPage,wxID_ANY,"",wxDefaultPosition,wxSize(500,120),wxTE_MULTILINE|wxTE_READONLY);
+            chatInput=new wxTextCtrl(collabPage,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,wxTE_PROCESS_ENTER);
+            auto chatButtons=new wxBoxSizer(wxHORIZONTAL);
+            chatSendButton=new wxButton(collabPage,wxID_ANY,"Send");
+            lineNoteButton=new wxButton(collabPage,wxID_ANY,"Send as line note");
+            chatButtons->Add(chatSendButton,1,wxRIGHT,8); chatButtons->Add(lineNoteButton,1);
+            collabRoot->Add(chatLog,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,16);
+            collabRoot->Add(chatInput,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,8);
+            collabRoot->Add(chatButtons,0,wxEXPAND|wxALL,16);
             collabPage->SetSizer(collabRoot);
             tabs->AddPage(collabPage,"Collaborate",true);
 
@@ -374,6 +461,10 @@ https://github.com/arcusmaximus/YTSubConverter
             hostButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Guard([this]{Start(true);});});
             joinButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Guard([this]{Start(false);});});
             leaveButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Goodbye(); Stop("Disconnected. Your subtitles stay open.");});
+            undoMineButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Guard([this]{UndoMine();});});
+            chatSendButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {SendChat(false);});
+            lineNoteButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {SendChat(true);});
+            chatInput->Bind(wxEVT_TEXT_ENTER,[this](wxCommandEvent&) {SendChat(false);});
             Buttons();
         }
         window->Show(); window->Raise();
@@ -575,6 +666,7 @@ https://github.com/arcusmaximus/YTSubConverter
         else Status("Connected - video downloaded, but Aegisub could not open it automatically.");
     }
     void Start(bool host) {
+        manualDisconnect=false; reconnecting=false; reconnectAttempts=0;
         name=Utf8(nameBox->GetValue().Strip(wxString::both)); CheckName(name);
         password=Utf8(passwordBox->GetValue());
         if(password.size()<6 || password.size()>128) throw collab::Conflict("Use a room password between 6 and 128 bytes.");
@@ -584,6 +676,7 @@ https://github.com/arcusmaximus/YTSubConverter
         if(std::sscanf(address.c_str(),"%u.%u.%u.%u%c",&a,&b,&d,&e,&rest)!=4 || a>255 || b>255 || d>255 || e>255 || a==0 || a>=224)
             throw collab::Conflict("Enter the Hamachi IPv4 address, for example 25.12.34.56.");
         wxIPV4address addr; addr.Hostname(ip); addr.Service(Port);
+        guestAddress=addr;
         if(host) {
             listener=std::make_unique<wxSocketServer>(addr,wxSOCKET_NOWAIT); listener->Notify(false);
             if(!listener->IsOk()) throw collab::Conflict("Could not host on that address. Check your Hamachi IP and whether a room is already open.");
@@ -629,30 +722,35 @@ https://github.com/arcusmaximus/YTSubConverter
         uint32_t count=1;
         for(auto const& p:peers) if(p->authenticated) ++count;
         w.Number(count);
-        w.String(name); w.String(localLineId); w.Number(localFrame<0?0:static_cast<uint32_t>(localFrame+1));
+        w.String(name); w.String(localLineId); w.Number(localFrame<0?0:static_cast<uint32_t>(localFrame+1)); w.Number(localTyping?1:0);
         for(auto const& p:peers) if(p->authenticated) {
             auto it=peerPresence.find(p.get());
             w.String(p->name);
             w.String(it==peerPresence.end()?std::string():it->second.lineId);
             auto frame=it==peerPresence.end()?-1:it->second.frame;
             w.Number(frame<0?0:static_cast<uint32_t>(frame+1));
+            w.Number(it!=peerPresence.end() && it->second.typing ? 1:0);
         }
         for(auto& p:peers) if(p->authenticated) p->Queue(w);
         UpdateFollowChoices();
-        if(c->subsGrid) c->subsGrid->Refresh(false);
+        if(c->subsGrid) c->subsGrid->Refresh(false); if(c->videoSlider) c->videoSlider->Refresh(false);
     }
     void SendPresence() {
         if(!connected) return;
         if(room) {BroadcastPresence(); return;}
         if(peers.empty()) return;
-        collab::Writer w; w.String("presence"); w.String(localLineId); w.Number(localFrame<0?0:static_cast<uint32_t>(localFrame+1));
+        collab::Writer w; w.String("presence"); w.String(localLineId); w.Number(localFrame<0?0:static_cast<uint32_t>(localFrame+1)); w.Number(localTyping?1:0);
         peers.front()->Queue(w);
     }
     void People() {
         size_t count=1;
         for(auto const& p:peers) if(p->authenticated) ++count;
         std::string names="Connected users ("+std::to_string(count)+")\n\n"+name+" (Host)";
-        for(auto const& p:peers) if(p->authenticated) names+="\n"+p->name;
+        for(auto const& p:peers) if(p->authenticated) {
+            auto it=peerPresence.find(p.get());
+            auto state=(it!=peerPresence.end() && it->second.typing)?"typing":"viewing";
+            names+="\n"+p->name+" ("+p->role+", "+state+")";
+        }
         people->SetLabel(Wx(names)); window->Layout();
         collab::Writer w; w.String("people"); w.String(names);
         for(auto& p:peers) if(p->authenticated) p->Queue(w);
@@ -666,32 +764,46 @@ https://github.com/arcusmaximus/YTSubConverter
         if(!connected) return;
         auto current=Snapshot();
         if(room) {
-            if(room->Apply(revision,current)) {base=room->Current(); revision=static_cast<uint32_t>(room->Revision()); if(current!=base) Apply(base); Broadcast();}
+            if(current!=base) {localUndo=base; localUndoRevision=revision;}
+            if(room->Apply(revision,current)) {
+                base=room->Current(); revision=static_cast<uint32_t>(room->Revision()); localTyping=false; presenceDirty=true;
+                if(current!=base) Apply(base); Broadcast(); Buttons();
+            }
         }
-        else if(!inFlight && current!=base) {
+        else if(!inFlight && current!=base && !peers.empty()) {
+            localUndo=base; localUndoRevision=revision;
             collab::Writer w; w.String("update"); w.Number(revision); w.Number(++sequence); w.Doc(current);
-            peers.front()->Queue(w); sent=current; inFlight=true; Status("Sending edits...");
+            peers.front()->Queue(w); sent=current; inFlight=true; Status("Sending edits..."); Buttons();
         }
     }
     void Handle(Peer& p,std::string const& message) {
         collab::Reader r(message); auto kind=r.String();
         if(room) {
             if(!p.authenticated) {
-                if(kind!="hello" || r.Number()!=3) throw collab::Conflict("Incompatible collaboration build.");
-                auto username=r.String(); auto secret=r.String(); r.End(); CheckName(username);
+                if(kind!="hello" || r.Number()!=4) throw collab::Conflict("Incompatible collaboration build.");
+                auto username=r.String(); auto secret=r.String(); auto requestedRole=r.String(); r.End(); CheckName(username);
+                if(requestedRole!="Editor" && requestedRole!="Viewer") throw collab::Conflict("Invalid collaboration role.");
                 if(secret!=password) throw collab::Conflict("Room password did not match.");
                 if(username==name || std::any_of(peers.begin(),peers.end(),[&](auto const& q){return q.get()!=&p && q->authenticated && q->name==username;})) throw collab::Conflict("That name is already in the room.");
-                p.name=username; p.authenticated=true; State(p); People(); SendMediaOffer(p);
+                p.name=username; p.role=requestedRole; p.authenticated=true; State(p); People(); SendMediaOffer(p);
                 BroadcastNotice(username+" joined the room."); presenceDirty=true; return;
             }
             if(kind=="leave") {r.End(); throw collab::Conflict("Client disconnected.");}
             if(kind=="presence") {
-                auto lineId=r.String(); auto encodedFrame=r.Number(); r.End();
-                if(!lineId.empty() && (lineId.size()!=32 || lineId.find_first_not_of("0123456789abcdef")!=std::string::npos))
+                auto lineId=r.String(); auto encodedFrame=r.Number(); auto typing=r.Number(); r.End();
+                if(typing>1 || (!lineId.empty() && (lineId.size()!=32 || lineId.find_first_not_of("0123456789abcdef")!=std::string::npos)))
                     throw collab::Conflict("Invalid collaboration presence.");
-                peerPresence[&p]={lineId,encodedFrame?static_cast<int>(encodedFrame-1):-1};
+                peerPresence[&p]={lineId,encodedFrame?static_cast<int>(encodedFrame-1):-1,typing==1};
                 MaybeFollow(p.name,peerPresence[&p].frame); presenceDirty=true;
-                if(c->subsGrid) c->subsGrid->Refresh(false);
+                if(c->subsGrid) c->subsGrid->Refresh(false); if(c->videoSlider) c->videoSlider->Refresh(false);
+                return;
+            }
+            if(kind=="chat") {
+                auto text=r.String(), lineId=r.String(); r.End();
+                if(text.empty() || text.size()>1000 || lineId.size()>32) throw collab::Conflict("Invalid chat message.");
+                AppendChat(p.name,text,lineId);
+                collab::Writer w; w.String("chat-event"); w.String(p.name); w.String(text); w.String(lineId);
+                for(auto& q:peers) if(q->authenticated) q->Queue(w);
                 return;
             }
             if(kind=="media-request") {
@@ -703,14 +815,38 @@ https://github.com/arcusmaximus/YTSubConverter
             }
             if(kind=="update") {
                 auto rev=r.Number(),seq=r.Number(); auto doc=r.Doc(); r.End(); CheckStyles(doc);
+                if(p.role=="Viewer") throw collab::Conflict("Viewer accounts cannot edit subtitles.");
                 if(seq!=p.ack+1) throw collab::Conflict("Unexpected update sequence.");
                 Sync(); // Publish the host's local changes before applying a peer update.
-                room->Apply(rev,doc); p.ack=seq; auto current=Snapshot(); base=room->Current(); revision=static_cast<uint32_t>(room->Revision());
-                if(current!=base) Apply(base);
-                Broadcast(); Status("Connected - all received edits are synced."); return;
+                try {
+                    room->Apply(rev,doc); p.ack=seq; auto current=Snapshot(); base=room->Current(); revision=static_cast<uint32_t>(room->Revision());
+                    if(current!=base) Apply(base);
+                    Broadcast(); Status("Connected - all received edits are synced.");
+                }
+                catch(collab::Conflict const& e) {
+                    p.ack=seq;
+                    collab::Writer w; w.String("conflict"); w.String(e.what()); w.Number(static_cast<uint32_t>(room->Revision())); w.Doc(room->Current()); p.Queue(w);
+                }
+                return;
             }
         }
         else {
+            if(kind=="chat-event") {
+                auto who=r.String(), text=r.String(), lineId=r.String(); r.End();
+                if(who.empty() || who.size()>40 || text.empty() || text.size()>1000 || lineId.size()>32) throw collab::Conflict("Invalid chat message.");
+                AppendChat(who,text,lineId); return;
+            }
+            if(kind=="conflict") {
+                auto why=r.String(); auto rev=r.Number(); auto roomDoc=r.Doc(); r.End(); CheckStyles(roomDoc);
+                inFlight=false; revision=rev;
+                wxString message=Wx("Both editors changed the same subtitle data.\n\n"+why+
+                    "\n\nYes = keep your version\nNo = use the room version\nCancel = disconnect and keep your local file");
+                int choice=wxMessageBox(message,"Collaboration conflict",wxYES_NO|wxCANCEL|wxICON_WARNING,window);
+                if(choice==wxYES) {base=roomDoc; dirty=true; changed=Clock::now(); localTyping=true; presenceDirty=true; Status("Keeping your version - resyncing...");}
+                else if(choice==wxNO) {Apply(roomDoc); base=roomDoc; dirty=false; localTyping=false; presenceDirty=true; Status("Using the room version.");}
+                else {Goodbye(); Stop("Disconnected after conflict. Your local subtitles are kept.");}
+                return;
+            }
             if(kind=="notice") {auto text=r.String(); r.End(); if(text.size()>512) throw collab::Conflict("Invalid room notice."); Notice(text); return;}
             if(kind=="room-closed") {
                 auto hostName=r.String(); r.End(); Notice(hostName+" disconnected."); throw collab::Conflict("Room closed by host.");
@@ -719,14 +855,14 @@ https://github.com/arcusmaximus/YTSubConverter
                 auto count=r.Number(); if(count>9) throw collab::Conflict("Invalid presence list.");
                 roomPresence.clear();
                 for(uint32_t i=0;i<count;++i) {
-                    auto who=r.String(), lineId=r.String(); auto encodedFrame=r.Number();
-                    if(who.empty() || who.size()>40 || (!lineId.empty() && (lineId.size()!=32 || lineId.find_first_not_of("0123456789abcdef")!=std::string::npos)))
+                    auto who=r.String(), lineId=r.String(); auto encodedFrame=r.Number(); auto typing=r.Number();
+                    if(typing>1 || who.empty() || who.size()>40 || (!lineId.empty() && (lineId.size()!=32 || lineId.find_first_not_of("0123456789abcdef")!=std::string::npos)))
                         throw collab::Conflict("Invalid collaboration presence.");
-                    roomPresence[who]={lineId,encodedFrame?static_cast<int>(encodedFrame-1):-1};
+                    roomPresence[who]={lineId,encodedFrame?static_cast<int>(encodedFrame-1):-1,typing==1};
                 }
                 r.End(); UpdateFollowChoices();
                 for(auto const& kv:roomPresence) MaybeFollow(kv.first,kv.second.frame);
-                if(c->subsGrid) c->subsGrid->Refresh(false);
+                if(c->subsGrid) c->subsGrid->Refresh(false); if(c->videoSlider) c->videoSlider->Refresh(false);
                 return;
             }
             if(kind=="media-offer") {
@@ -777,10 +913,11 @@ https://github.com/arcusmaximus/YTSubConverter
                     auto current=Snapshot(); auto merged=collab::Merge(inFlight?sent:base,current,doc);
                     if(merged!=current) Apply(merged);
                 }
-                base=doc; revision=rev; inFlight=false; dirty=true;
+                base=doc; revision=rev; inFlight=false; dirty=true; localTyping=false;
+                if(reconnecting) {reconnecting=false; reconnectAttempts=0; Notice("Reconnected.");}
                 localLineId=RowLineId(c->selectionController->GetActiveLine());
                 localFrame=c->project->VideoProvider()?c->videoController->GetFrameN():-1;
-                presenceDirty=true; Status("Connected - edits sync automatically."); return;
+                presenceDirty=true; Status("Connected - edits sync automatically."); Buttons(); return;
             }
             if(kind=="people") {auto names=r.String(); r.End(); if(names.size()>2048) throw collab::Conflict("Invalid room list."); people->SetLabel(Wx(names)); window->Layout(); return;}
             if(kind=="error") {auto why=r.String(); r.End(); throw collab::Conflict(why);}
@@ -800,11 +937,15 @@ https://github.com/arcusmaximus/YTSubConverter
                 }
             }
             auto now=Clock::now();
+            if(reconnecting && peers.empty() && now>=reconnectAt) TryReconnect();
+            if(reconnecting && !peers.empty() && !peers.front()->socket->IsConnected() && now-reconnectStarted>std::chrono::seconds(3)) {
+                peers.clear(); reconnectAt=now+std::chrono::seconds(1);
+            }
             for(auto it=peers.begin();it!=peers.end();) {
                 auto& p=**it;
                 try {
                     if(!room && !p.hello && p.socket->IsConnected()) {
-                        collab::Writer w; w.String("hello"); w.Number(3); w.String(name); w.String(password); p.Queue(w); p.hello=true;
+                        collab::Writer w; w.String("hello"); w.Number(4); w.String(name); w.String(password); w.String(roleChoice?Utf8(roleChoice->GetStringSelection()):std::string("Editor")); p.Queue(w); p.hello=true;
                     }
                     for(auto const& message:p.Read()) Handle(p,message);
                     if(room && p.authenticated) PumpMedia(p);
@@ -814,7 +955,10 @@ https://github.com/arcusmaximus/YTSubConverter
                     ++it;
                 }
                 catch(std::exception const& e) {
-                    if(!room) throw;
+                    if(!room) {
+                        BeginReconnect(e.what());
+                        break;
+                    }
                     collab::Writer error; error.String("error"); error.String(e.what());
                     try {p.Queue(error); p.Flush();} catch(...) {}
                     auto departed=p.name;
@@ -830,6 +974,7 @@ https://github.com/arcusmaximus/YTSubConverter
             }
             if(presenceDirty && now-presenceSent>=std::chrono::milliseconds(200)) {
                 SendPresence(); presenceDirty=false; presenceSent=now;
+                if(room) People();
             }
             if(now-heartbeat>std::chrono::seconds(5)) {
                 collab::Writer w; w.String("ping"); for(auto& p:peers) if(p->authenticated || connected) p->Queue(w); heartbeat=now;
@@ -850,17 +995,38 @@ std::string CollaborationController::LastEditorFor(AssDialogue const* line) cons
 std::string CollaborationController::PresenceFor(AssDialogue const* line) const {
     if(!line || !impl->connected) return {};
     auto id=Identity(impl->c->ass.get(),*line); if(id.empty()) return {};
-    std::vector<std::string> names;
-    if(impl->localLineId==id && !impl->name.empty()) names.push_back(impl->name);
+    std::vector<std::pair<std::string,bool>> names;
+    if(impl->localLineId==id && !impl->name.empty()) names.push_back({impl->name,impl->localTyping});
     if(impl->room) {
         for(auto const& p:impl->peers) if(p->authenticated) {
             auto it=impl->peerPresence.find(p.get());
-            if(it!=impl->peerPresence.end() && it->second.lineId==id) names.push_back(p->name);
+            if(it!=impl->peerPresence.end() && it->second.lineId==id) names.push_back({p->name,it->second.typing});
         }
     } else {
-        for(auto const& kv:impl->roomPresence) if(kv.first!=impl->name && kv.second.lineId==id) names.push_back(kv.first);
+        for(auto const& kv:impl->roomPresence) if(kv.first!=impl->name && kv.second.lineId==id) names.push_back({kv.first,kv.second.typing});
     }
     std::string out;
-    for(auto const& n:names) {if(!out.empty()) out+=", "; out+=n;}
+    for(auto const& n:names) {
+        if(!out.empty()) out+=", ";
+        out+=n.first+(n.second?" (typing)":" (viewing)");
+    }
+    return out;
+}
+uint32_t CollaborationController::UserColor(std::string const& who) const {return impl->ColorFor(who);}
+uint32_t CollaborationController::PresenceColorFor(AssDialogue const* line) const {
+    if(!line) return 0;
+    auto text=PresenceFor(line); if(text.empty()) return 0;
+    auto pos=text.find(" ("); return impl->ColorFor(text.substr(0,pos));
+}
+std::vector<std::pair<std::string,int>> CollaborationController::RemotePlayheads() const {
+    std::vector<std::pair<std::string,int>> out;
+    if(!impl->connected) return out;
+    if(impl->room) {
+        for(auto const& p:impl->peers) if(p->authenticated) {
+            auto it=impl->peerPresence.find(p.get()); if(it!=impl->peerPresence.end() && it->second.frame>=0) out.emplace_back(p->name,it->second.frame);
+        }
+    } else {
+        for(auto const& kv:impl->roomPresence) if(kv.first!=impl->name && kv.second.frame>=0) out.emplace_back(kv.first,kv.second.frame);
+    }
     return out;
 }
