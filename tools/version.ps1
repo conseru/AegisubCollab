@@ -9,9 +9,7 @@ param (
 
 $lastSvnRevision = 6962
 $lastSvnHash = '16cd907fe7482cb54a7374cd28b8501f138116be'
-$defineNumberMatch = [regex] '^#define\s+(\w+)\s+(\d+)$'
-$defineVersionTupleMatch = [regex] '^#define\s+(RESOURCE_BASE_VERSION)\s+["'']?(\d+)\s*,\s*(\d+)\s*,\s*(\d+)["'']?$'
-$defineStringMatch = [regex] "^#define\s+(\w+)\s+[`"']?(.+?)[`"']?$"
+$defineNumberMatch = [regex] '^#define\s+(\w+)\s+(\d+)$defineStringMatch = [regex] "^#define\s+(\w+)\s+[`"']?(.+?)[`"']?$"
 $semVerMatch = [regex] 'v?(\d+)\.(\d+).(\d+)(?:-(\w+))?'
 
 $repositoryRootPath = Join-Path $PSScriptRoot .. | Resolve-Path
@@ -109,7 +107,7 @@ $version.GetEnumerator() | %{
   "`n#define $($_.Key) $($fmtValue)"
 } | Out-File -FilePath $gitVersionHeaderPath -Encoding utf8
 
-$defineVersionTupleMatch = [regex] '^#define\s+(RESOURCE_BASE_VERSION)\s+[\"'']?(\d+)\s*,\s*(\d+)\s*,\s*(\d+)[\"'']?$defineStringMatch = [regex] "^#define\s+(\w+)\s+[`"']?(.+?)[`"']?$"
+$defineVersionTupleMatch = [regex] '^#define\s+(RESOURCE_BASE_VERSION)\s+"?(\d+)\s*,\s*(\d+)\s*,\s*(\d+)"?$defineStringMatch = [regex] "^#define\s+(\w+)\s+[`"']?(.+?)[`"']?$"
 $semVerMatch = [regex] 'v?(\d+)\.(\d+).(\d+)(?:-(\w+))?'
 
 $repositoryRootPath = Join-Path $PSScriptRoot .. | Resolve-Path
@@ -139,9 +137,6 @@ $version['INSTALLER_VERSION'] = '3.5.0'
 if (Test-Path $gitVersionHeaderPath) {
   Get-Content $gitVersionHeaderPath | %{$_.Trim()} | ?{$_} | %{
     switch -regex ($_) {
-      $defineVersionTupleMatch {
-        $version[$Matches[1]] = @([int]$Matches[2], [int]$Matches[3], [int]$Matches[4]);
-      }
       $defineNumberMatch {
         $version[$Matches[1]] = [int]$Matches[2];
       }
@@ -237,9 +232,6 @@ $version['INSTALLER_VERSION'] = '3.5.0'
 if (Test-Path $gitVersionHeaderPath) {
   Get-Content $gitVersionHeaderPath | %{$_.Trim()} | ?{$_} | %{
     switch -regex ($_) {
-      $defineVersionTupleMatch {
-        $version[$Matches[1]] = @([int]$Matches[2], [int]$Matches[3], [int]$Matches[4]);
-      }
       $defineNumberMatch {
         $version[$Matches[1]] = [int]$Matches[2];
       }
