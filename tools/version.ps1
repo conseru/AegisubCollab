@@ -40,6 +40,9 @@ $version['INSTALLER_VERSION'] = '3.5.0'
 if (Test-Path $gitVersionHeaderPath) {
   Get-Content $gitVersionHeaderPath | %{$_.Trim()} | ?{$_} | %{
     switch -regex ($_) {
+      $defineVersionTupleMatch {
+        $version[$Matches[1]] = @([int]$Matches[2], [int]$Matches[3], [int]$Matches[4]);
+      }
       $defineNumberMatch {
         $version[$Matches[1]] = [int]$Matches[2];
       }
