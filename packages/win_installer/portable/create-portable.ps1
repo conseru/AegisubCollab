@@ -26,7 +26,7 @@ function Copy-ToDirectory {
 
 # Keep in sync with the number of Write-Step calls below.
 $script:stepNum = 0
-$script:stepTotal = 11
+$script:stepTotal = 12
 
 # Report progress both via an interactive bar and a textual trail for CI logs.
 function Write-Step {
@@ -52,6 +52,10 @@ $PortableZipPath = Join-Path $BuildRoot "Aegisub-$GitVersion-$Architecture-porta
 Write-Step 'Removing previous output'
 Remove-Item -LiteralPath $PortableOutputDir -Force -Recurse -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $InstallerDir -Force -Recurse -ErrorAction SilentlyContinue
+
+Write-Step 'Building translations'
+meson compile -C $BuildRoot aegisub-gmo
+if ($LASTEXITCODE -ne 0) { throw "aegisub-gmo build failed (exit $LASTEXITCODE)" }
 
 Write-Step 'Installing build output'
 meson install -C $BuildRoot --no-rebuild --destdir $InstallerDir
