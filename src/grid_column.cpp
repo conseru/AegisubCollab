@@ -18,6 +18,7 @@
 
 #include "ass_dialogue.h"
 #include "ass_file.h"
+#include "collaboration_controller.h"
 #include "compat.h"
 #include "include/aegisub/context.h"
 #include "options.h"
@@ -346,6 +347,34 @@ public:
 	}
 };
 
+
+struct GridColumnCollabAuthor final : GridColumn {
+    COLUMN_HEADER(_("Author"))
+    COLUMN_DESCRIPTION(_("Collaboration line author"))
+    wxString Value(const AssDialogue *d, const agi::Context *c) const override {
+        return c->collaboration ? to_wx(c->collaboration->AuthorFor(d)) : wxString();
+    }
+    int Width(const agi::Context *, WidthHelper &helper) const override {return helper("WWWWWWWWWW");}
+};
+
+struct GridColumnCollabLastEditor final : GridColumn {
+    COLUMN_HEADER(_("Last edit"))
+    COLUMN_DESCRIPTION(_("Last collaborator to edit this line"))
+    wxString Value(const AssDialogue *d, const agi::Context *c) const override {
+        return c->collaboration ? to_wx(c->collaboration->LastEditorFor(d)) : wxString();
+    }
+    int Width(const agi::Context *, WidthHelper &helper) const override {return helper("WWWWWWWWWW");}
+};
+
+struct GridColumnCollabPresence final : GridColumn {
+    COLUMN_HEADER(_("Live"))
+    COLUMN_DESCRIPTION(_("Collaborators currently working on this line"))
+    wxString Value(const AssDialogue *d, const agi::Context *c) const override {
+        return c->collaboration ? to_wx(c->collaboration->PresenceFor(d)) : wxString();
+    }
+    int Width(const agi::Context *, WidthHelper &helper) const override {return helper("WWWWWWWWWWWWWW");}
+};
+
 class GridColumnText final : public GridColumn {
 	const agi::OptionValue *override_mode;
 	wxString replace_char;
@@ -417,6 +446,9 @@ std::vector<std::unique_ptr<GridColumn>> GetGridColumns() {
 	ret.push_back(make<GridColumnCPS>());
 	ret.push_back(make<GridColumnStyle>());
 	ret.push_back(make<GridColumnActor>());
+	ret.push_back(make<GridColumnCollabAuthor>());
+	ret.push_back(make<GridColumnCollabLastEditor>());
+	ret.push_back(make<GridColumnCollabPresence>());
 	ret.push_back(make<GridColumnEffect>());
 	ret.push_back(make<GridColumnMarginLeft>());
 	ret.push_back(make<GridColumnMarginRight>());

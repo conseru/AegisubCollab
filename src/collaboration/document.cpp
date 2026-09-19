@@ -46,6 +46,8 @@ void Validate(Document const& doc) {
             throw Conflict("Invalid or duplicate line identity.");
         for (auto const& f : l.fields) if (f.size() > 100000 || f.find('\0') != std::string::npos || f.find_first_of("\r\n") != std::string::npos)
             throw Conflict("Invalid subtitle text.");
+        for(size_t i : {11u,12u}) if(l.fields[i].size()>40 || l.fields[i].find_first_of(",[]")!=std::string::npos)
+            throw Conflict("Invalid collaboration author name.");
         if (l.fields[0] != "0" && l.fields[0] != "1") throw Conflict("Invalid comment flag.");
         for (size_t i : {1u,2u,3u,6u,7u,8u}) Integer(l.fields[i]);
         if (Integer(l.fields[2]) > Integer(l.fields[3])) throw Conflict("A line ends before it starts.");
@@ -87,7 +89,17 @@ Document Merge(Document const& base, Document const& local, Document const& remo
         for (size_t i=0;i<11;++i) x.fields[i]=Choose(old.fields[i],l.at(id).fields[i],r.at(id).fields[i],"line " + std::to_string(rank[id]));
         auto pair=[](Line const& a){return std::make_pair(a.fields[2],a.fields[3]);};
         auto timing=Choose(pair(old),pair(l.at(id)),pair(r.at(id)),"timing on line " + std::to_string(rank[id]));
-        x.fields[2]=timing.first; x.fields[3]=timing.second; result.emplace(id,std::move(x));
+        x.fields[2]=timing.first; x.fields[3]=timing.second;
+        x.fields[11]=Choose(old.fields[11],l.at(id).fields[11],r.at(id).fields[11],"author on line " + std::to_string(rank[id]));
+        bool local_changed=false, remote_changed=false;
+        for(size_t i=0;i<11;++i) {
+            local_changed |= l.at(id).fields[i]!=old.fields[i];
+            remote_changed |= r.at(id).fields[i]!=old.fields[i];
+        }
+        if(local_changed) x.fields[12]=l.at(id).fields[12];
+        else if(remote_changed) x.fields[12]=r.at(id).fields[12];
+        else x.fields[12]=Choose(old.fields[12],l.at(id).fields[12],r.at(id).fields[12],"last editor on line " + std::to_string(rank[id]));
+        result.emplace(id,std::move(x));
     }
     for (auto const& kv:r) if (!b.count(kv.first)) result.emplace(kv);
     for (auto const& kv:l) if (!b.count(kv.first)) {

@@ -9,10 +9,11 @@
 #include <vector>
 
 namespace collab {
-// comment, layer, start, end, style, actor, margin L/R/V, effect, text.
+// comment, layer, start, end, style, actor, margin L/R/V, effect, text,
+// collaboration author, collaboration last editor.
 struct Line {
     std::string id;
-    std::array<std::string, 11> fields;
+    std::array<std::string, 13> fields;
     bool operator==(Line const& other) const { return id == other.id && fields == other.fields; }
     bool operator!=(Line const& other) const { return !(*this == other); }
 };

@@ -11,8 +11,9 @@ It is source code for a prototype, not a verified Windows release yet.
 3. The guest enters their name, the host's Hamachi IPv4 address and that password,
    then clicks **Join room**. Joining saves a separate ASS backup first and opens
    the host's subtitles in the current window.
-4. Close the collaboration window and edit normally. Open it again to see the
-   people connected, connection status, or disconnect.
+4. Close the collaboration window and edit normally. Open it again to see all
+   connected user names, follow another collaborator's playhead, review the
+   latest join/disconnect notice, or disconnect.
 5. If the host has a video open, the joiner can automatically download and open
    that exact room video when their currently loaded video does not match the
    host filename and file size. The option is enabled by default in Collaborate.
@@ -26,8 +27,9 @@ The room ends when the host closes Aegisub or disconnects.
 Edits are checked after a short pause (250 ms), with a 10-second fallback scan.
 Only changed subtitle documents are transmitted. Heartbeats run separately.
 Subtitles, timing, inserted/copied lines, explicit deletions, styles and script
-coordinate settings are shared. Each new line receives a persistent identity
-and a `[by Name]` suffix in Actor. Existing Actor roles are retained.
+coordinate settings are shared. Each line receives a persistent identity. Lines created during a room also store
+their collaboration author, and locally changed lines store the last editor.
+Aegisub shows Author, Last edit, and Live columns without rewriting the Actor field.
 
 Both people should install the same fonts. The host's currently opened video
 can now be transferred directly to a joiner over the existing Hamachi room
@@ -99,3 +101,21 @@ join/backup; simultaneous edits on different lines; same-field conflict;
 copy/paste above and below the original; deletion versus edit; changed styles
 and resolution; disconnect/reconnect; host shutdown; save/reopen; and Undo.
 Check subtitle grid selection and video rendering during remote edits.
+
+
+## Collaboration v2 UI
+
+The Collaborate dialog now has two tabs. **Collaborate** keeps the room controls,
+shows every connected user, provides a playhead-follow selector, and keeps a
+small recent-event line. Join and disconnect events also appear temporarily in
+Aegisub's status bar rather than interrupting work with a popup.
+
+**YTSub Reference** contains an in-app reference for the YTSubConverter ASS
+features and YouTube-specific override tags used by this project. It includes
+mobile/PC caveats and links to the upstream font chart and YTSubConverter.
+
+The subtitle grid adds **Author**, **Last edit**, and **Live** columns. Author is
+set for lines created during a collaboration room. Last edit updates whenever a
+collaborator changes that line. Live lists users whose active line is that row.
+Presence and playhead updates are ephemeral room state and are not written into
+subtitle text.
