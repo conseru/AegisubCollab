@@ -234,7 +234,7 @@ void VideoSlider::OnPaint(wxPaintEvent &) {
 			auto rgb=c->collaboration->UserColor(marker.first);
 			dc.SetPen(wxPen(wxColour((rgb>>16)&255,(rgb>>8)&255,rgb&255),2));
 			dc.DrawLine(mx,1,mx,h-2);
-			dc.DrawText(to_wx(marker.first),std::min(mx+3,std::max(0,w-80)),1);
+			dc.DrawText(wxString::FromUTF8(marker.first),std::min(mx+3,std::max(0,w-80)),1);
 		}
 	}
 
