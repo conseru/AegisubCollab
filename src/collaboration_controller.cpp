@@ -13,6 +13,7 @@
 #include "project.h"
 #include "subs_controller.h"
 #include "subtitle_format_ass.h"
+#include "video_controller.h"
 #include <libaegisub/fs.h>
 #include <libaegisub/vfr.h>
 #include <wx/button.h>
