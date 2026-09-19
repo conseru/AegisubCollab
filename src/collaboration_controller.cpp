@@ -261,7 +261,8 @@ struct CollaborationController::Impl : wxEvtHandler {
             localLineId=line?Identity(c->ass.get(),*line):std::string();
             UpdateYTCurrentLine();
             presenceDirty=true;
-            if(c->subsGrid) c->subsGrid->Refresh(false);\n            if(c->videoSlider) c->videoSlider->Refresh(false);
+            if(c->subsGrid) c->subsGrid->Refresh(false);
+            if(c->videoSlider) c->videoSlider->Refresh(false);
         });
         videoSeek=c->videoController->AddSeekListener([this](int frame) {
             localFrame=frame; presenceDirty=true;
@@ -291,7 +292,12 @@ struct CollaborationController::Impl : wxEvtHandler {
         if(lineNoteButton) lineNoteButton->Enable(active);
         if(cancelMediaButton) cancelMediaButton->Enable(active && (mediaReceive.active || !mediaSends.empty()));
         if(transferHostButton) {
-            size_t editableGuests=0;\n            if(room) {\n                for(auto const& p:peers) if(p->authenticated && p->role=="Editor") ++editableGuests;\n            }
+            size_t editableGuests=0;
+            if(room) {
+                for(auto const& p:peers) {
+                    if(p->authenticated && p->role=="Editor") ++editableGuests;
+                }
+            }
             transferHostButton->Enable(room && editableGuests==1 && peers.size()==1 && !hostTransferPending);
         }
     }
@@ -299,7 +305,8 @@ struct CollaborationController::Impl : wxEvtHandler {
         roomPresence.clear(); peerPresence.clear(); localLineId.clear(); localFrame=-1; presenceDirty=false; localTyping=false;
         reconnecting=false; reconnectAttempts=0;
         if(followChoice) {followChoice->Clear(); followChoice->Append("Do not follow"); followChoice->SetSelection(0);}
-        if(c->subsGrid) c->subsGrid->Refresh(false);\n            if(c->videoSlider) c->videoSlider->Refresh(false);
+        if(c->subsGrid) c->subsGrid->Refresh(false);
+            if(c->videoSlider) c->videoSlider->Refresh(false);
     }
     void Stop(std::string const& reason) {
         timer.Stop(); ClearMediaReceive(false); mediaSends.clear(); offeredMediaName.clear(); offeredMediaHash.clear(); offeredMediaSize=0;
@@ -923,7 +930,8 @@ https://github.com/arcusmaximus/YTSubConverter
         }
         for(auto& p:peers) if(p->authenticated) p->Queue(w);
         UpdateFollowChoices();
-        if(c->subsGrid) c->subsGrid->Refresh(false);\n            if(c->videoSlider) c->videoSlider->Refresh(false);
+        if(c->subsGrid) c->subsGrid->Refresh(false);
+            if(c->videoSlider) c->videoSlider->Refresh(false);
     }
     void SendPresence() {
         if(!connected) return;
@@ -993,7 +1001,8 @@ https://github.com/arcusmaximus/YTSubConverter
                     throw collab::Conflict("Invalid collaboration presence.");
                 peerPresence[&p]={lineId,encodedFrame?static_cast<int>(encodedFrame-1):-1,typing==1};
                 MaybeFollow(p.name,peerPresence[&p].frame); presenceDirty=true;
-                if(c->subsGrid) c->subsGrid->Refresh(false);\n            if(c->videoSlider) c->videoSlider->Refresh(false);
+                if(c->subsGrid) c->subsGrid->Refresh(false);
+            if(c->videoSlider) c->videoSlider->Refresh(false);
                 return;
             }
             if(kind=="chat") {
@@ -1068,7 +1077,8 @@ https://github.com/arcusmaximus/YTSubConverter
                 }
                 r.End(); UpdateFollowChoices();
                 for(auto const& kv:roomPresence) MaybeFollow(kv.first,kv.second.frame);
-                if(c->subsGrid) c->subsGrid->Refresh(false);\n            if(c->videoSlider) c->videoSlider->Refresh(false);
+                if(c->subsGrid) c->subsGrid->Refresh(false);
+            if(c->videoSlider) c->videoSlider->Refresh(false);
                 return;
             }
             if(kind=="media-offer") {
