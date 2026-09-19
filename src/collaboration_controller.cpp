@@ -14,6 +14,7 @@
 #include "project.h"
 #include "subs_controller.h"
 #include "subtitle_format_ass.h"
+#include "text_selection_controller.h"
 #include "video_controller.h"
 #include <libaegisub/fs.h>
 #include <libaegisub/vfr.h>
@@ -89,6 +90,52 @@ std::string HumanBytes(uint64_t bytes) {
     std::snprintf(out,sizeof out,"%.2f %s",value,unit);
     return out;
 }
+
+std::vector<std::string> const& YTFonts() {
+    static std::vector<std::string> fonts={"Roboto","Courier New","Times New Roman","Lucida Console","Comic Sans MS","Monotype Corsiva","Arial","Carrois Gothic SC"};
+    return fonts;
+}
+bool YTFontAllowed(std::string font) {
+    while(!font.empty() && std::isspace(static_cast<unsigned char>(font.front()))) font.erase(font.begin());
+    while(!font.empty() && std::isspace(static_cast<unsigned char>(font.back()))) font.pop_back();
+    return std::any_of(YTFonts().begin(),YTFonts().end(),[&](auto const& f){
+        if(f.size()!=font.size()) return false;
+        for(size_t i=0;i<f.size();++i) if(std::tolower(static_cast<unsigned char>(f[i]))!=std::tolower(static_cast<unsigned char>(font[i]))) return false;
+        return true;
+    });
+}
+std::string YTTagName(std::string const& afterSlash) {
+    static std::vector<std::string> const exact={"ytktGlitch","ytktFade","ytchroma","ytshake","ytruby","ytvert","ytdir","ytpack","ytsub","ytsup","ytsur","alpha","fade","move","fad","pos","an","fs","1c","2c","3c","4c","1a","2a","3a","4a","ytkt","b","i","u","c","k","t"};
+    if(afterSlash.rfind("fn",0)==0) return "fn";
+    if(afterSlash.rfind("r",0)==0) return "r";
+    for(auto const& tag:exact) if(afterSlash.rfind(tag,0)==0) {
+        if(tag.size()==1 && afterSlash.size()>1 && std::isalpha(static_cast<unsigned char>(afterSlash[1]))) continue;
+        return tag;
+    }
+    size_t n=0; while(n<afterSlash.size() && (std::isalnum(static_cast<unsigned char>(afterSlash[n]))||afterSlash[n]=='_')) ++n;
+    return afterSlash.substr(0,n);
+}
+std::vector<std::string> YTLineWarnings(std::string const& text) {
+    static std::set<std::string> const supported={"b","i","u","fn","fs","c","1c","2c","3c","4c","1a","2a","3a","4a","alpha","pos","an","k","r","fad","fade","move","t","ytsub","ytsup","ytsur","ytruby","ytvert","ytdir","ytpack","ytshake","ytchroma","ytkt","ytktFade","ytktGlitch"};
+    std::vector<std::string> warnings; std::set<std::string> seen; bool inBlock=false;
+    for(size_t i=0;i<text.size();++i) {
+        if(text[i]=='{') inBlock=true;
+        else if(text[i]=='}') inBlock=false;
+        else if(inBlock && text[i]=='\\') {
+            auto tag=YTTagName(text.substr(i+1)); if(tag.empty()) continue;
+            if(!supported.count(tag) && seen.insert(tag).second) warnings.push_back("unsupported tag \\"+tag);
+            if(tag=="fn") {
+                size_t a=i+3,b=a; while(b<text.size() && text[b]!='\\' && text[b]!='}') ++b;
+                auto font=text.substr(a,b-a);
+                if(!font.empty() && !YTFontAllowed(font) && seen.insert("font:"+font).second) warnings.push_back("unsupported YouTube font "+font);
+            }
+            if((tag=="ytruby"||tag=="ytvert"||tag=="ytpack"||tag=="ytsub"||tag=="ytsup") && seen.insert("mobile:"+tag).second)
+                warnings.push_back("\\"+tag+" is PC-only or has a mobile fallback");
+        }
+    }
+    return warnings;
+}
+
 void CheckName(std::string const& s) {
     if (s.empty() || s.size()>40 || s.find_first_of(",\r\n[]")!=std::string::npos || s.find('\0')!=std::string::npos)
         throw collab::Conflict("Enter a name (1-40 bytes, without commas or brackets).");
@@ -139,7 +186,10 @@ struct CollaborationController::Impl : wxEvtHandler {
     wxTimer timer{this};
     wxWeakRef<wxDialog> window;
     wxTextCtrl *nameBox=nullptr,*addressBox=nullptr,*passwordBox=nullptr,*chatLog=nullptr,*chatInput=nullptr;
-    wxStaticText *status=nullptr,*people=nullptr,*recent=nullptr;
+    wxStaticText *status=nullptr,*people=nullptr,*recent=nullptr,*ytCurrentStatus=nullptr;
+    wxTextCtrl *ytScanOutput=nullptr;
+    wxChoice *ytTagChoice=nullptr;
+    wxButton *ytInsertButton=nullptr,*ytScanButton=nullptr;
     wxButton *hostButton=nullptr,*joinButton=nullptr,*leaveButton=nullptr,*undoMineButton=nullptr,*chatSendButton=nullptr,*lineNoteButton=nullptr,*cancelMediaButton=nullptr;
     wxCheckBox *autoMediaBox=nullptr;
     wxChoice *followChoice=nullptr,*roleChoice=nullptr;
@@ -202,6 +252,7 @@ struct CollaborationController::Impl : wxEvtHandler {
         });
         activeLineChanged=c->selectionController->AddActiveLineListener([this](AssDialogue* line) {
             localLineId=line?Identity(c->ass.get(),*line):std::string();
+            UpdateYTCurrentLine();
             presenceDirty=true;
             if(c->subsGrid) c->subsGrid->Refresh(false); if(c->videoSlider) c->videoSlider->Refresh(false);
         });
@@ -313,6 +364,38 @@ struct CollaborationController::Impl : wxEvtHandler {
         reconnectStarted=Clock::now();
         Status("Reconnecting... attempt "+std::to_string(reconnectAttempts)+"/10");
     }
+    void UpdateYTCurrentLine() {
+        if(!ytCurrentStatus) return;
+        auto line=c->selectionController->GetActiveLine();
+        if(!line) {ytCurrentStatus->SetLabel("Current line: none"); return;}
+        auto warnings=YTLineWarnings(line->Text.get());
+        ytCurrentStatus->SetLabel(warnings.empty()?"Current line: YouTube compatible":"Current line: "+std::to_string(warnings.size())+" YouTube warning(s)");
+        if(window) window->Layout();
+    }
+    void InsertYTTag() {
+        if(!ytTagChoice || ytTagChoice->GetSelection()==wxNOT_FOUND) return;
+        auto tag=Utf8(ytTagChoice->GetStringSelection());
+        c->textSelectionController->ReplaceSelection("{"+tag+"}");
+        Notice("Inserted "+tag+" at the subtitle cursor.");
+    }
+    void ScanYT() {
+        if(!ytScanOutput) return;
+        std::string out; int warningCount=0;
+        for(auto const& style:c->ass->Styles) {
+            if(!YTFontAllowed(style.font)) {out+="Style "+style.name+": unsupported YouTube font "+style.font+" (YTSubConverter will fall back to Roboto)\n"; ++warningCount;}
+            if(style.strikeout || style.scalex!=100. || style.scaley!=100. || style.spacing!=0. || style.angle!=0.) {
+                out+="Style "+style.name+": uses ASS style features outside the documented YTSubConverter supported set\n"; ++warningCount;
+            }
+        }
+        for(auto const& line:c->ass->Events) {
+            auto warnings=YTLineWarnings(line.Text.get());
+            for(auto const& w:warnings) {out+="Line "+std::to_string(line.Row+1)+": "+w+"\n"; ++warningCount;}
+        }
+        if(!warningCount) out="No YTSubConverter compatibility warnings found.\n";
+        else out="YTSubConverter scan: "+std::to_string(warningCount)+" warning(s)\n\n"+out;
+        ytScanOutput->SetValue(Wx(out));
+        Status("YTSubConverter compatibility scan finished.");
+    }
     void Guard(std::function<void()> fn) {
         try {fn();}
         catch(std::exception const& e) {Stop(e.what()); if(window) {window->Show(); window->Raise();}}
@@ -381,6 +464,24 @@ struct CollaborationController::Impl : wxEvtHandler {
             auto ytTitle=new wxStaticText(ytPage,wxID_ANY,"YTSubConverter supported ASS features");
             auto ytFont=ytTitle->GetFont(); ytFont.SetPointSize(ytFont.GetPointSize()+2); ytFont.SetWeight(wxFONTWEIGHT_BOLD); ytTitle->SetFont(ytFont);
             ytRoot->Add(ytTitle,0,wxALL,12);
+            ytCurrentStatus=new wxStaticText(ytPage,wxID_ANY,"Current line: not checked");
+            ytRoot->Add(ytCurrentStatus,0,wxLEFT|wxRIGHT|wxBOTTOM,12);
+            auto ytActions=new wxBoxSizer(wxHORIZONTAL);
+            ytTagChoice=new wxChoice(ytPage,wxID_ANY);
+            for(auto const* tag:{"\\b1","\\i1","\\u1","\\fnRoboto","\\fs30","\\1c&HFFFFFF&","\\alpha&H00&","\\pos(960,540)","\\an5","\\k20","\\fad(250,250)","\\move(100,100,500,500)","\\t(0,500,\\fs40)","\\ytsub","\\ytsup","\\ytsur","\\ytruby8","\\ytvert9","\\ytdir4","\\ytpack1","\\ytshake","\\ytchroma","\\ytktFade","\\ytktGlitch"}) ytTagChoice->Append(tag);
+            ytTagChoice->SetSelection(0);
+            ytInsertButton=new wxButton(ytPage,wxID_ANY,"Insert tag at cursor");
+            ytScanButton=new wxButton(ytPage,wxID_ANY,"Check YouTube compatibility");
+            ytActions->Add(ytTagChoice,1,wxRIGHT,8); ytActions->Add(ytInsertButton,0,wxRIGHT,8); ytActions->Add(ytScanButton,0);
+            ytRoot->Add(ytActions,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
+            ytScanOutput=new wxTextCtrl(ytPage,wxID_ANY,"",wxDefaultPosition,wxSize(-1,110),wxTE_MULTILINE|wxTE_READONLY);
+            ytRoot->Add(ytScanOutput,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
+            auto fontBox=new wxStaticBoxSizer(wxVERTICAL,ytPage,"Embedded YouTube font chart");
+            for(auto const& fontName:YTFonts()) {
+                auto sample=new wxStaticText(ytPage,wxID_ANY,Wx(fontName+" - AaBb 123"));
+                auto sf=sample->GetFont(); sf.SetFaceName(Wx(fontName)); sample->SetFont(sf); fontBox->Add(sample,0,wxBOTTOM,2);
+            }
+            ytRoot->Add(fontBox,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
             auto reference=new wxTextCtrl(ytPage,wxID_ANY,wxString::FromUTF8(R"YTREF(YTSubConverter / YouTube ASS quick reference
 
 STYLE FEATURES
@@ -482,6 +583,9 @@ https://github.com/arcusmaximus/YTSubConverter
             chatSendButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {SendChat(false);});
             lineNoteButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {SendChat(true);});
             chatInput->Bind(wxEVT_TEXT_ENTER,[this](wxCommandEvent&) {SendChat(false);});
+            ytInsertButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {InsertYTTag();});
+            ytScanButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {ScanYT();});
+            UpdateYTCurrentLine();
             Buttons();
         }
         window->Show(); window->Raise();
@@ -1067,4 +1171,8 @@ std::vector<std::pair<std::string,int>> CollaborationController::RemotePlayheads
         for(auto const& kv:impl->roomPresence) if(kv.first!=impl->name && kv.second.frame>=0) out.emplace_back(kv.first,kv.second.frame);
     }
     return out;
+}
+
+int CollaborationController::YTWarningCount(AssDialogue const* line) const {
+    return line?static_cast<int>(YTLineWarnings(line->Text.get()).size()):0;
 }
