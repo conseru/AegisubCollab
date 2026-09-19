@@ -73,3 +73,12 @@ void TextSelectionController::SetSelection(int start, int end) {
 	changing = false;
 	AnnounceSelectionChanged();
 }
+
+void TextSelectionController::ReplaceSelection(std::string const& text) {
+	if (!ctrl) return;
+	ctrl->ReplaceSelection(wxString::FromUTF8(text));
+	selection_start = ctrl->GetSelectionStart();
+	selection_end = ctrl->GetSelectionEnd();
+	insertion_point = ctrl->GetInsertionPoint();
+	AnnounceSelectionChanged();
+}
