@@ -138,3 +138,12 @@ downloads use a stable hash-based filename and are kept across connection
 interruptions; the next offer requests only the missing byte range. The
 Collaborate tab also provides a Cancel media transfer button. Canceling keeps
 the partial file so a later transfer can resume.
+
+
+## v3 host handoff
+
+The current host can transfer room ownership to the other connected editor
+without restarting the subtitle session. The first implementation is deliberately
+limited to a two-person room: one host and one editor. The new host binds the
+same collaboration port on the Hamachi address already used by its socket, the
+existing TCP connection changes roles in place, and subtitle state is preserved.
