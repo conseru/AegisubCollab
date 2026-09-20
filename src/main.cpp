@@ -287,25 +287,11 @@ bool AegisubApp::OnInit() {
 		StartupLog("Create main window");
 		NewProjectContext();
 
-		// Version checker
-		StartupLog("Possibly perform automatic updates check");
-		if (OPT_GET("App/First Start")->GetBool()) {
+		// This fork is distributed as a rolling collaboration build.
+		// Never interrupt first launch or startup with the upstream update checker.
+		if (OPT_GET("App/First Start")->GetBool())
 			OPT_SET("App/First Start")->SetBool(false);
-#ifdef WITH_UPDATE_CHECKER
-			int result = wxMessageBox(_("Do you want Aegisub to check for updates whenever it starts? You can still do it manually via the Help menu."),_("Check for updates?"), wxYES_NO | wxCENTER);
-			OPT_SET("App/Auto/Check For Updates")->SetBool(result == wxYES);
-			try {
-				config::opt->Flush();
-			}
-			catch (agi::fs::FileSystemError const& e) {
-				wxMessageBox(to_wx(e.GetMessage()), _("Error saving config file"), wxOK | wxICON_ERROR | wxCENTER);
-			}
-#endif
-		}
-
-#ifdef WITH_UPDATE_CHECKER
-		PerformVersionCheck(false);
-#endif
+		OPT_SET("App/Auto/Check For Updates")->SetBool(false);
 
 		// Get parameter subs
 		StartupLog("Parse command line");
