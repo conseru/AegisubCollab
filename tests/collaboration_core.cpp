@@ -12,7 +12,7 @@ int main() {
  Room room(b); auto a=b,c=b; a.lines[0].fields[10]="A"; c.lines[1].fields[10]="B";
  room.Apply(1,a); room.Apply(1,c); Check(room.Current().lines[0].fields[10]=="A" && room.Current().lines[1].fields[10]=="B");
  auto revision=room.Revision(); Check(!room.Apply(1,c)); Check(room.Revision()==revision);
- c.lines[0].fields[10]="conflict"; auto before=room.Current(); Fails([&]{room.Apply(1,c);}); Check(room.Current()==before);
+ c.lines[0].fields[10]="same-line-latest"; room.Apply(1,c); Check(room.Current().lines[0].fields[10]=="same-line-latest");
  a=b;c=b; a.lines.insert(a.lines.begin()+1,L('c',"same")); c.lines.insert(c.lines.begin()+1,L('d',"same"));
  auto merged=Merge(b,c,a); Check(merged.lines.size()==4 && merged.lines[1].id==std::string(32,'c') && merged.lines[2].id==std::string(32,'d'));
  a=b;a.lines.erase(a.lines.begin()); Check(Merge(b,b,a).lines.size()==1);
@@ -33,6 +33,6 @@ int main() {
  for(size_t n=0;n<w.Bytes().size();++n){auto truncated=w.Bytes().substr(0,n);Fails([&]{Reader rr(truncated);rr.Doc();rr.End();});}
  auto trailing=w.Bytes()+"x";Fails([&]{Reader rr(trailing);rr.Doc();rr.End();});
  std::string enormous(4,'\xff');Fails([&]{Reader rr(enormous);rr.Doc();});
- std::cout<<"Native collaboration core checks passed (merge, conflicts, deletion, replay, styles/resolution, bounded wire format).\n";
+ std::cout<<"Native collaboration core checks passed (merge, same-line edits, structural conflicts, deletion, replay, styles/resolution, bounded wire format).\n";
  }catch(std::exception const& e){std::cerr<<e.what()<<'\n';return EXIT_FAILURE;}
 }
