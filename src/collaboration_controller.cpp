@@ -213,7 +213,7 @@ struct CollaborationController::Impl : wxEvtHandler {
         std::ifstream file;
         uint64_t size=0, sent=0;
         int lastPercent=-1;
-        std::string name,hash;
+        std::string name,hash,kind;
         bool active=false;
     };
     struct MediaReceive {
@@ -221,12 +221,12 @@ struct CollaborationController::Impl : wxEvtHandler {
         agi::fs::path partPath, finalPath;
         uint64_t expected=0, received=0;
         int lastPercent=-1;
-        std::string name,hash;
+        std::string name,hash,kind;
         bool active=false;
     };
     std::map<Peer*,MediaSend> mediaSends;
     MediaReceive mediaReceive;
-    std::string offeredMediaName,offeredMediaHash;
+    std::string offeredMediaName,offeredMediaHash,offeredMediaKind;
     uint64_t offeredMediaSize=0;
     std::string mediaHashCachePath,mediaHashCache;
     uint64_t mediaHashCacheSize=0;
@@ -239,7 +239,7 @@ struct CollaborationController::Impl : wxEvtHandler {
     std::map<int,std::string> nativeIds;
     std::string name,password;
     Clock::time_point changed=Clock::now(), heartbeat=Clock::now(), checked=Clock::now();
-    agi::signal::Connection commit, fileOpened, videoOpened, activeLineChanged, videoSeek;
+    agi::signal::Connection commit, fileOpened, videoOpened, audioOpened, activeLineChanged, videoSeek;
 
     explicit Impl(agi::Context* context):c(context) {
         Bind(wxEVT_TIMER,[this](wxTimerEvent&) {Tick();});
@@ -252,6 +252,13 @@ struct CollaborationController::Impl : wxEvtHandler {
         fileOpened=c->subsController->AddFileOpenListener([this](agi::fs::path const&) {Stop("Disconnected: another subtitle file was opened.");});
         videoOpened=c->project->AddVideoProviderListener([this](AsyncVideoProvider*) {
             if(room) {
+                for(auto& p:peers) {
+                    if(p->authenticated) SendMediaOffer(*p);
+                }
+            }
+        });
+        audioOpened=c->project->AddAudioProviderListener([this](agi::AudioProvider*) {
+            if(room && c->project->VideoName().empty()) {
                 for(auto& p:peers) {
                     if(p->authenticated) SendMediaOffer(*p);
                 }
@@ -309,7 +316,7 @@ struct CollaborationController::Impl : wxEvtHandler {
             if(c->videoSlider) c->videoSlider->Refresh(false);
     }
     void Stop(std::string const& reason) {
-        timer.Stop(); ClearMediaReceive(false); mediaSends.clear(); offeredMediaName.clear(); offeredMediaHash.clear(); offeredMediaSize=0;
+        timer.Stop(); ClearMediaReceive(false); mediaSends.clear(); offeredMediaName.clear(); offeredMediaHash.clear(); offeredMediaKind.clear(); offeredMediaSize=0;
         peers.clear(); listener.reset(); room.reset(); connected=false; inFlight=false; ignoring=false; nativeIds.clear(); dirty=false;
         ResetFollow();
         if(window) {Status(reason); people->SetLabel("Not in a room"); Buttons();}
@@ -481,7 +488,7 @@ struct CollaborationController::Impl : wxEvtHandler {
             collabRoot->Add(new wxStaticText(collabPage,wxID_ANY,"Join role"),0,wxLEFT|wxRIGHT,16);
             roleChoice=new wxChoice(collabPage,wxID_ANY); roleChoice->Append("Editor"); roleChoice->Append("Viewer"); roleChoice->SetSelection(0);
             collabRoot->Add(roleChoice,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP|wxBOTTOM,8);
-            autoMediaBox=new wxCheckBox(collabPage,wxID_ANY,"Automatically download and open the host's video if mine does not match");
+            autoMediaBox=new wxCheckBox(collabPage,wxID_ANY,"Automatically download and open the host's shared video/audio if mine does not match");
             autoMediaBox->SetValue(true);
             collabRoot->Add(autoMediaBox,0,wxLEFT|wxRIGHT|wxBOTTOM,16);
             auto buttons=new wxBoxSizer(wxHORIZONTAL);
@@ -751,17 +758,19 @@ https://github.com/arcusmaximus/YTSubConverter
         }
         mediaReceive=MediaReceive{};
     }
-    bool CurrentMedia(std::string& filename,uint64_t& size,agi::fs::path& path,std::string& hash) {
-        path=c->project->VideoName();
+    bool MediaForKind(std::string const& kind,std::string& filename,uint64_t& size,agi::fs::path& path,std::string& hash) {
+        if(kind=="video") path=c->project->VideoName();
+        else if(kind=="audio") path=c->project->AudioName();
+        else return false;
         if(path.empty()) return false;
         try {
             if(!agi::fs::FileExists(path)) return false;
             auto bytes=agi::fs::Size(path);
             if(!bytes || bytes>MaxMediaBytes) return false;
             filename=path.filename().string(); size=static_cast<uint64_t>(bytes);
-            auto key=path.string();
+            auto key=kind+":"+path.string();
             if(mediaHashCachePath!=key || mediaHashCacheSize!=size || mediaHashCache.empty()) {
-                Status("Calculating video SHA-256...");
+                Status("Calculating "+kind+" SHA-256...");
                 mediaHashCache=collab::FileSha256Hex(path); mediaHashCachePath=key; mediaHashCacheSize=size;
             }
             hash=mediaHashCache;
@@ -769,8 +778,19 @@ https://github.com/arcusmaximus/YTSubConverter
         }
         catch(...) {return false;}
     }
-    bool LocalMediaMatches(std::string const& filename,uint64_t size,std::string const& hash) {
-        auto const& path=c->project->VideoName();
+    bool CurrentMedia(std::string& kind,std::string& filename,uint64_t& size,agi::fs::path& path,std::string& hash) {
+        if(!c->project->VideoName().empty()) {
+            kind="video";
+            if(MediaForKind(kind,filename,size,path,hash)) return true;
+        }
+        if(!c->project->AudioName().empty()) {
+            kind="audio";
+            if(MediaForKind(kind,filename,size,path,hash)) return true;
+        }
+        return false;
+    }
+    bool LocalMediaMatches(std::string const& kind,std::string const& filename,uint64_t size,std::string const& hash) {
+        auto const& path=kind=="audio"?c->project->AudioName():c->project->VideoName();
         if(path.empty() || path.filename().string()!=filename) return false;
         try {
             if(!agi::fs::FileExists(path) || agi::fs::Size(path)!=size) return false;
@@ -779,55 +799,55 @@ https://github.com/arcusmaximus/YTSubConverter
         catch(...) {return false;}
     }
     void SendMediaOffer(Peer& p) {
-        std::string filename,hash; uint64_t size=0; agi::fs::path path;
-        if(!CurrentMedia(filename,size,path,hash)) return;
-        collab::Writer w; w.String("media-offer"); w.String(filename); Write64(w,size); w.String(hash); p.Queue(w);
+        std::string kind,filename,hash; uint64_t size=0; agi::fs::path path;
+        if(!CurrentMedia(kind,filename,size,path,hash)) return;
+        collab::Writer w; w.String("media-offer"); w.String(kind); w.String(filename); Write64(w,size); w.String(hash); p.Queue(w);
     }
-    void RequestMedia(Peer& p,std::string const& filename,uint64_t size,std::string const& hash) {
-        if(filename.empty() || filename.size()>512 || !size || size>MaxMediaBytes || hash.size()!=64 || hash.find_first_not_of("0123456789abcdef")!=std::string::npos)
-            throw collab::Conflict("Invalid shared video offer.");
+    void RequestMedia(Peer& p,std::string const& kind,std::string const& filename,uint64_t size,std::string const& hash) {
+        if((kind!="video" && kind!="audio") || filename.empty() || filename.size()>512 || !size || size>MaxMediaBytes || hash.size()!=64 || hash.find_first_not_of("0123456789abcdef")!=std::string::npos)
+            throw collab::Conflict("Invalid shared media offer.");
         auto dirWx=wxStandardPaths::Get().GetUserLocalDataDir()+"/collaboration-media";
         agi::fs::path dir(Utf8(dirWx)); agi::fs::CreateDirectory(dir);
-        if(agi::fs::FreeSpace(dir)<size+64ull*1024*1024) throw collab::Conflict("Not enough free disk space for the shared video.");
+        if(agi::fs::FreeSpace(dir)<size+64ull*1024*1024) throw collab::Conflict("Not enough free disk space for the shared media.");
         auto localName=SafeMediaFilename(filename,hash);
         ClearMediaReceive(false);
-        mediaReceive.name=filename; mediaReceive.expected=size; mediaReceive.hash=hash;
+        mediaReceive.name=filename; mediaReceive.expected=size; mediaReceive.hash=hash; mediaReceive.kind=kind;
         mediaReceive.finalPath=dir/agi::fs::path(localName);
         mediaReceive.partPath=dir/agi::fs::path(localName+".part");
-        offeredMediaName=filename; offeredMediaSize=size; offeredMediaHash=hash;
+        offeredMediaName=filename; offeredMediaSize=size; offeredMediaHash=hash; offeredMediaKind=kind;
         uint64_t offset=0;
         try {if(agi::fs::FileExists(mediaReceive.partPath)) offset=std::min<uint64_t>(agi::fs::Size(mediaReceive.partPath),size);} catch(...) {offset=0;}
         mediaReceive.received=offset;
-        collab::Writer w; w.String("media-request"); w.String(filename); Write64(w,size); w.String(hash); Write64(w,offset); p.Queue(w);
-        Status((offset?"Resuming ":"Requesting ")+filename+" at "+HumanBytes(offset)+" / "+HumanBytes(size)+"...");
+        collab::Writer w; w.String("media-request"); w.String(kind); w.String(filename); Write64(w,size); w.String(hash); Write64(w,offset); p.Queue(w);
+        Status((offset?"Resuming ":"Requesting ")+kind+" "+filename+" at "+HumanBytes(offset)+" / "+HumanBytes(size)+"...");
         Buttons();
     }
-    void BeginMediaReceive(std::string const& filename,uint64_t size,std::string const& hash,uint64_t offset) {
-        if(filename!=offeredMediaName || size!=offeredMediaSize || hash!=offeredMediaHash ||
-           filename!=mediaReceive.name || size!=mediaReceive.expected || hash!=mediaReceive.hash || offset!=mediaReceive.received)
-            throw collab::Conflict("The host video changed while the download was starting.");
+    void BeginMediaReceive(std::string const& kind,std::string const& filename,uint64_t size,std::string const& hash,uint64_t offset) {
+        if(kind!=offeredMediaKind || filename!=offeredMediaName || size!=offeredMediaSize || hash!=offeredMediaHash ||
+           kind!=mediaReceive.kind || filename!=mediaReceive.name || size!=mediaReceive.expected || hash!=mediaReceive.hash || offset!=mediaReceive.received)
+            throw collab::Conflict("The host media changed while the download was starting.");
         if(offset==0) {
             std::ofstream reset(mediaReceive.partPath,std::ios::binary|std::ios::trunc);
-            if(!reset) throw collab::Conflict("Could not create the shared video download file.");
+            if(!reset) throw collab::Conflict("Could not create the shared media download file.");
         }
         mediaReceive.file.open(mediaReceive.partPath,std::ios::binary|std::ios::app);
-        if(!mediaReceive.file) throw collab::Conflict("Could not open the shared video download file.");
+        if(!mediaReceive.file) throw collab::Conflict("Could not open the shared media download file.");
         mediaReceive.lastPercent=-1; mediaReceive.active=true;
-        Status("Downloading "+filename+" - "+std::to_string(size?offset*100/size:0)+"% of "+HumanBytes(size));
+        Status("Downloading "+kind+" "+filename+" - "+std::to_string(size?offset*100/size:0)+"% of "+HumanBytes(size));
         Buttons();
     }
-    void BeginMediaSend(Peer& p,std::string const& requestedName,uint64_t requestedSize,std::string const& requestedHash,uint64_t offset) {
+    void BeginMediaSend(Peer& p,std::string const& kind,std::string const& requestedName,uint64_t requestedSize,std::string const& requestedHash,uint64_t offset) {
         std::string filename,hash; uint64_t size=0; agi::fs::path path;
-        if(!CurrentMedia(filename,size,path,hash) || filename!=requestedName || size!=requestedSize || hash!=requestedHash || offset>size)
-            throw collab::Conflict("The host video changed. Request the transfer again.");
+        if(!MediaForKind(kind,filename,size,path,hash) || filename!=requestedName || size!=requestedSize || hash!=requestedHash || offset>size)
+            throw collab::Conflict("The host media changed. Request the transfer again.");
         MediaSend transfer; transfer.file.open(path,std::ios::binary);
-        if(!transfer.file) throw collab::Conflict("Could not read the host video.");
+        if(!transfer.file) throw collab::Conflict("Could not read the host media.");
         transfer.file.seekg(static_cast<std::streamoff>(offset),std::ios::beg);
-        if(!transfer.file) throw collab::Conflict("Could not resume the host video transfer.");
-        transfer.size=size; transfer.sent=offset; transfer.name=filename; transfer.hash=hash; transfer.active=true;
+        if(!transfer.file) throw collab::Conflict("Could not resume the host media transfer.");
+        transfer.size=size; transfer.sent=offset; transfer.name=filename; transfer.hash=hash; transfer.kind=kind; transfer.active=true;
         mediaSends[&p]=std::move(transfer);
-        collab::Writer w; w.String("media-start"); w.String(filename); Write64(w,size); w.String(hash); Write64(w,offset); p.Queue(w);
-        Status("Sending "+filename+" to "+p.name+(offset?" (resumed)...":"...")); Buttons();
+        collab::Writer w; w.String("media-start"); w.String(kind); w.String(filename); Write64(w,size); w.String(hash); Write64(w,offset); p.Queue(w);
+        Status("Sending "+kind+" "+filename+" to "+p.name+(offset?" (resumed)...":"...")); Buttons();
     }
     void PumpMedia(Peer& p) {
         auto it=mediaSends.find(&p);
@@ -836,30 +856,37 @@ https://github.com/arcusmaximus/YTSubConverter
         if(transfer.sent>=transfer.size) return;
         auto want=static_cast<size_t>(std::min<uint64_t>(MediaChunkBytes,transfer.size-transfer.sent));
         std::string bytes(want,'\0'); transfer.file.read(bytes.data(),static_cast<std::streamsize>(want));
-        auto got=transfer.file.gcount(); if(got<=0) throw collab::Conflict("Could not finish reading the host video.");
+        auto got=transfer.file.gcount(); if(got<=0) throw collab::Conflict("Could not finish reading the host media.");
         bytes.resize(static_cast<size_t>(got));
         collab::Writer w; w.String("media-chunk"); Write64(w,transfer.sent); w.String(bytes); p.Queue(w);
         transfer.sent+=static_cast<uint64_t>(got);
         int percent=static_cast<int>((transfer.sent*100)/transfer.size);
-        if(percent!=transfer.lastPercent) {transfer.lastPercent=percent; Status("Sending "+transfer.name+" to "+p.name+" - "+std::to_string(percent)+"%");}
+        if(percent!=transfer.lastPercent) {transfer.lastPercent=percent; Status("Sending "+transfer.kind+" "+transfer.name+" to "+p.name+" - "+std::to_string(percent)+"%");}
         if(transfer.sent==transfer.size) {
-            collab::Writer done; done.String("media-done"); Write64(done,transfer.size); done.String(transfer.hash); p.Queue(done);
+            collab::Writer done; done.String("media-done"); done.String(transfer.kind); Write64(done,transfer.size); done.String(transfer.hash); p.Queue(done);
             transfer.file.close(); transfer.active=false; Buttons();
         }
     }
-    void FinishMediaReceive(uint64_t size,std::string const& hash) {
-        if(!mediaReceive.active || size!=mediaReceive.expected || hash!=mediaReceive.hash || mediaReceive.received!=mediaReceive.expected)
-            throw collab::Conflict("Shared video download was incomplete.");
+    void FinishMediaReceive(std::string const& kind,uint64_t size,std::string const& hash) {
+        if(!mediaReceive.active || kind!=mediaReceive.kind || size!=mediaReceive.expected || hash!=mediaReceive.hash || mediaReceive.received!=mediaReceive.expected)
+            throw collab::Conflict("Shared media download was incomplete.");
         mediaReceive.file.close(); mediaReceive.active=false;
-        if(agi::fs::Size(mediaReceive.partPath)!=mediaReceive.expected) throw collab::Conflict("Shared video size check failed.");
-        Status("Verifying downloaded video SHA-256...");
-        if(collab::FileSha256Hex(mediaReceive.partPath)!=mediaReceive.hash) throw collab::Conflict("Shared video SHA-256 verification failed.");
+        if(agi::fs::Size(mediaReceive.partPath)!=mediaReceive.expected) throw collab::Conflict("Shared media size check failed.");
+        Status("Verifying downloaded "+kind+" SHA-256...");
+        if(collab::FileSha256Hex(mediaReceive.partPath)!=mediaReceive.hash) throw collab::Conflict("Shared media SHA-256 verification failed.");
         if(agi::fs::FileExists(mediaReceive.finalPath)) agi::fs::Remove(mediaReceive.finalPath);
         agi::fs::Rename(mediaReceive.partPath,mediaReceive.finalPath);
         auto finalPath=mediaReceive.finalPath; auto displayName=mediaReceive.name; mediaReceive=MediaReceive{};
-        c->project->LoadVideo(finalPath);
-        if(c->project->VideoName()==finalPath) Status("Connected - verified and opened "+displayName+".");
-        else Status("Connected - video verified, but Aegisub could not open it automatically.");
+        if(kind=="audio") {
+            c->project->LoadAudio(finalPath);
+            if(c->project->AudioName()==finalPath) Status("Connected - verified and opened shared audio "+displayName+".");
+            else Status("Connected - audio verified, but Aegisub could not open it automatically.");
+        }
+        else {
+            c->project->LoadVideo(finalPath);
+            if(c->project->VideoName()==finalPath) Status("Connected - verified and opened shared video "+displayName+".");
+            else Status("Connected - video verified, but Aegisub could not open it automatically.");
+        }
         Buttons();
     }
     void Start(bool host) {
@@ -980,7 +1007,7 @@ https://github.com/arcusmaximus/YTSubConverter
         collab::Reader r(message); auto kind=r.String();
         if(room) {
             if(!p.authenticated) {
-                if(kind!="hello" || r.Number()!=6) throw collab::Conflict("Incompatible collaboration build.");
+                if(kind!="hello" || r.Number()!=7) throw collab::Conflict("Incompatible collaboration build.");
                 auto username=r.String(); auto secret=r.String(); auto requestedRole=r.String(); r.End(); CheckName(username);
                 if(requestedRole!="Editor" && requestedRole!="Viewer") throw collab::Conflict("Invalid collaboration role.");
                 if(secret!=password) throw collab::Conflict("Room password did not match.");
@@ -1014,8 +1041,8 @@ https://github.com/arcusmaximus/YTSubConverter
                 return;
             }
             if(kind=="media-request") {
-                auto requestedName=r.String(); auto requestedSize=Read64(r); auto requestedHash=r.String(); auto offset=Read64(r); r.End();
-                BeginMediaSend(p,requestedName,requestedSize,requestedHash,offset); return;
+                auto mediaKind=r.String(); auto requestedName=r.String(); auto requestedSize=Read64(r); auto requestedHash=r.String(); auto offset=Read64(r); r.End();
+                BeginMediaSend(p,mediaKind,requestedName,requestedSize,requestedHash,offset); return;
             }
             if(kind=="media-cancel") {
                 r.End(); auto it=mediaSends.find(&p); if(it!=mediaSends.end()) {it->second.file.close(); mediaSends.erase(it);}
@@ -1082,25 +1109,25 @@ https://github.com/arcusmaximus/YTSubConverter
                 return;
             }
             if(kind=="media-offer") {
-                auto filename=r.String(); auto size=Read64(r); auto hash=r.String(); r.End();
-                if(filename.empty() || filename.size()>512 || !size || size>MaxMediaBytes || hash.size()!=64) throw collab::Conflict("Invalid shared video offer.");
-                offeredMediaName=filename; offeredMediaSize=size; offeredMediaHash=hash;
-                if(LocalMediaMatches(filename,size,hash)) {
-                    Status("Connected - matching host video is already open.");
+                auto mediaKind=r.String(); auto filename=r.String(); auto size=Read64(r); auto hash=r.String(); r.End();
+                if((mediaKind!="video" && mediaKind!="audio") || filename.empty() || filename.size()>512 || !size || size>MaxMediaBytes || hash.size()!=64) throw collab::Conflict("Invalid shared media offer.");
+                offeredMediaKind=mediaKind; offeredMediaName=filename; offeredMediaSize=size; offeredMediaHash=hash;
+                if(LocalMediaMatches(mediaKind,filename,size,hash)) {
+                    Status("Connected - matching host "+mediaKind+" is already open.");
                     return;
                 }
                 bool accept=autoMediaBox && autoMediaBox->GetValue();
                 if(!accept) {
-                    auto message=wxString("The host is using ")+Wx(filename)+" ("+Wx(HumanBytes(size))+").\n\nDownload and open it now?";
-                    accept=wxMessageBox(message,"Shared video",wxYES_NO|wxICON_QUESTION,window)==wxYES;
+                    auto message=wxString("The host is using ")+Wx(mediaKind)+" "+Wx(filename)+" ("+Wx(HumanBytes(size))+").\n\nDownload and open it now?";
+                    accept=wxMessageBox(message,"Shared media",wxYES_NO|wxICON_QUESTION,window)==wxYES;
                 }
-                if(accept) RequestMedia(p,filename,size,hash);
-                else Status("Connected - host video was not downloaded.");
+                if(accept) RequestMedia(p,mediaKind,filename,size,hash);
+                else Status("Connected - host "+mediaKind+" was not downloaded.");
                 return;
             }
             if(kind=="media-start") {
-                auto filename=r.String(); auto size=Read64(r); auto hash=r.String(); auto offset=Read64(r); r.End();
-                BeginMediaReceive(filename,size,hash,offset); return;
+                auto mediaKind=r.String(); auto filename=r.String(); auto size=Read64(r); auto hash=r.String(); auto offset=Read64(r); r.End();
+                BeginMediaReceive(mediaKind,filename,size,hash,offset); return;
             }
             if(kind=="media-chunk") {
                 auto offset=Read64(r); auto bytes=r.String(); r.End();
@@ -1117,7 +1144,7 @@ https://github.com/arcusmaximus/YTSubConverter
                 return;
             }
             if(kind=="media-done") {
-                auto size=Read64(r); auto hash=r.String(); r.End(); FinishMediaReceive(size,hash);
+                auto mediaKind=r.String(); auto size=Read64(r); auto hash=r.String(); r.End(); FinishMediaReceive(mediaKind,size,hash);
                 collab::Writer ack; ack.String("media-received"); p.Queue(ack); return;
             }
             if(kind=="state") {
@@ -1161,7 +1188,7 @@ https://github.com/arcusmaximus/YTSubConverter
                 auto& p=**it;
                 try {
                     if(!room && !p.hello && p.socket->IsConnected()) {
-                        collab::Writer w; w.String("hello"); w.Number(6); w.String(name); w.String(password); w.String(roleChoice?Utf8(roleChoice->GetStringSelection()):std::string("Editor")); p.Queue(w); p.hello=true;
+                        collab::Writer w; w.String("hello"); w.Number(7); w.String(name); w.String(password); w.String(roleChoice?Utf8(roleChoice->GetStringSelection()):std::string("Editor")); p.Queue(w); p.hello=true;
                     }
                     for(auto const& message:p.Read()) Handle(p,message);
                     if(room && p.authenticated) PumpMedia(p);
