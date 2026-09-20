@@ -33,6 +33,7 @@
 #include <wx/msgdlg.h>
 #include <wx/sizer.h>
 #include <wx/socket.h>
+#include <wx/statbox.h>
 #include <wx/stattext.h>
 #include <wx/stdpaths.h>
 #include <wx/textctrl.h>
@@ -577,169 +578,179 @@ struct CollaborationController::Impl : wxEvtHandler {
     }
     void Show() {
         if(!window) {
-            window=new wxDialog(c->parent,wxID_ANY,"Collaborate",wxDefaultPosition,wxDefaultSize,wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER);
+            window=new wxDialog(c->parent,wxID_ANY,"Aegisub Collaboration",wxDefaultPosition,wxSize(760,760),wxDEFAULT_DIALOG_STYLE|wxRESIZE_BORDER);
             auto root=new wxBoxSizer(wxVERTICAL);
             auto tabs=new wxNotebook(window,wxID_ANY);
 
-            auto collabPage=new wxPanel(tabs);
+            // Room tab
+            auto collabPage=new wxScrolledWindow(tabs,wxID_ANY);
+            collabPage->SetScrollRate(0,12);
             auto collabRoot=new wxBoxSizer(wxVERTICAL);
-            auto title=new wxStaticText(collabPage,wxID_ANY,"Edit subtitles together");
-            auto font=title->GetFont(); font.SetPointSize(font.GetPointSize()+3); font.SetWeight(wxFONTWEIGHT_BOLD); title->SetFont(font);
-            collabRoot->Add(title,0,wxALL,16);
-            auto hint=new wxStaticText(collabPage,wxID_ANY,"Connect both PCs to the same Hamachi network first."); collabRoot->Add(hint,0,wxLEFT|wxRIGHT|wxBOTTOM,16);
-            auto field=[&](char const* label,wxTextCtrl*& box,long style=0) {
-                collabRoot->Add(new wxStaticText(collabPage,wxID_ANY,label),0,wxLEFT|wxRIGHT,16);
-                box=new wxTextCtrl(collabPage,wxID_ANY,"",wxDefaultPosition,wxSize(500,-1),style);
-                collabRoot->Add(box,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP|wxBOTTOM,8);
+            auto title=new wxStaticText(collabPage,wxID_ANY,"Live subtitle collaboration");
+            auto font=title->GetFont(); font.SetPointSize(font.GetPointSize()+4); font.SetWeight(wxFONTWEIGHT_BOLD); title->SetFont(font);
+            collabRoot->Add(title,0,wxLEFT|wxRIGHT|wxTOP,18);
+            auto hint=new wxStaticText(collabPage,wxID_ANY,"Work in the same subtitle file over Hamachi. Changes, presence, chat and media stay in sync.");
+            hint->Wrap(680); collabRoot->Add(hint,0,wxLEFT|wxRIGHT|wxTOP|wxBOTTOM,18);
+
+            auto connectionBox=new wxStaticBoxSizer(wxVERTICAL,collabPage,"Connection");
+            auto fields=new wxFlexGridSizer(2,8,12); fields->AddGrowableCol(1,1);
+            auto addField=[&](char const* label,wxTextCtrl*& box,long style=0) {
+                fields->Add(new wxStaticText(collabPage,wxID_ANY,label),0,wxALIGN_CENTER_VERTICAL|wxLEFT,4);
+                box=new wxTextCtrl(collabPage,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,style);
+                fields->Add(box,1,wxEXPAND);
             };
-            field("Your name",nameBox); nameBox->SetMaxLength(40);
-            field("Hamachi IPv4 address - yours to host, your friend's to join",addressBox);
-            field("Room password - agree on this with your friend",passwordBox,wxTE_PASSWORD);
-            collabRoot->Add(new wxStaticText(collabPage,wxID_ANY,"Join role"),0,wxLEFT|wxRIGHT,16);
+            addField("Display name",nameBox); nameBox->SetMaxLength(40);
+            addField("Hamachi IPv4",addressBox);
+            addField("Room password",passwordBox,wxTE_PASSWORD);
+            fields->Add(new wxStaticText(collabPage,wxID_ANY,"Join as"),0,wxALIGN_CENTER_VERTICAL|wxLEFT,4);
             roleChoice=new wxChoice(collabPage,wxID_ANY); roleChoice->Append("Editor"); roleChoice->Append("Viewer"); roleChoice->SetSelection(0);
-            collabRoot->Add(roleChoice,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP|wxBOTTOM,8);
-            autoMediaBox=new wxCheckBox(collabPage,wxID_ANY,"Automatically download and open the host's shared video/audio if mine does not match");
-            autoMediaBox->SetValue(true);
-            collabRoot->Add(autoMediaBox,0,wxLEFT|wxRIGHT|wxBOTTOM,16);
+            fields->Add(roleChoice,1,wxEXPAND);
+            connectionBox->Add(fields,0,wxEXPAND|wxALL,12);
+            autoMediaBox=new wxCheckBox(collabPage,wxID_ANY,"Automatically receive matching host video or audio");
+            autoMediaBox->SetValue(true); connectionBox->Add(autoMediaBox,0,wxLEFT|wxRIGHT|wxBOTTOM,12);
             auto buttons=new wxBoxSizer(wxHORIZONTAL);
-            hostButton=new wxButton(collabPage,wxID_ANY,"Host room"); joinButton=new wxButton(collabPage,wxID_ANY,"Join room"); leaveButton=new wxButton(collabPage,wxID_ANY,"Disconnect");
-            for(auto b:{hostButton,joinButton,leaveButton}) buttons->Add(b,1,wxRIGHT,8);
-            collabRoot->Add(buttons,0,wxEXPAND|wxALL,16);
-            status=new wxStaticText(collabPage,wxID_ANY,"Open the subtitles you want to share, then host a room."); status->Wrap(500);
+            hostButton=new wxButton(collabPage,wxID_ANY,"Host room");
+            joinButton=new wxButton(collabPage,wxID_ANY,"Join room");
+            leaveButton=new wxButton(collabPage,wxID_ANY,"Disconnect");
+            buttons->Add(hostButton,1,wxRIGHT,8); buttons->Add(joinButton,1,wxRIGHT,8); buttons->Add(leaveButton,1);
+            connectionBox->Add(buttons,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
+            collabRoot->Add(connectionBox,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,18);
+
+            auto roomBox=new wxStaticBoxSizer(wxVERTICAL,collabPage,"Room status");
+            status=new wxStaticText(collabPage,wxID_ANY,"Open the subtitles you want to share, then host or join a room."); status->Wrap(650);
             people=new wxStaticText(collabPage,wxID_ANY,"Not in a room");
             recent=new wxStaticText(collabPage,wxID_ANY,"Recent: none");
-            collabRoot->Add(status,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
-            collabRoot->Add(people,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
-            collabRoot->Add(new wxStaticText(collabPage,wxID_ANY,"Follow collaborator playhead"),0,wxLEFT|wxRIGHT,16);
+            roomBox->Add(status,0,wxEXPAND|wxALL,10);
+            roomBox->Add(people,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
+            auto followRow=new wxBoxSizer(wxHORIZONTAL);
+            followRow->Add(new wxStaticText(collabPage,wxID_ANY,"Follow playhead"),0,wxALIGN_CENTER_VERTICAL|wxRIGHT,10);
             followChoice=new wxChoice(collabPage,wxID_ANY); followChoice->Append("Do not follow"); followChoice->SetSelection(0);
-            collabRoot->Add(followChoice,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP|wxBOTTOM,8);
+            followRow->Add(followChoice,1);
+            roomBox->Add(followRow,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
             auto actionButtons=new wxBoxSizer(wxHORIZONTAL);
-            undoMineButton=new wxButton(collabPage,wxID_ANY,"Undo my last synced edit");
-            cancelMediaButton=new wxButton(collabPage,wxID_ANY,"Cancel media transfer");
+            undoMineButton=new wxButton(collabPage,wxID_ANY,"Undo my edit");
+            cancelMediaButton=new wxButton(collabPage,wxID_ANY,"Cancel transfer");
             transferHostButton=new wxButton(collabPage,wxID_ANY,"Transfer host");
             actionButtons->Add(undoMineButton,1,wxRIGHT,8); actionButtons->Add(cancelMediaButton,1,wxRIGHT,8); actionButtons->Add(transferHostButton,1);
-            collabRoot->Add(actionButtons,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,16);
-            collabRoot->Add(recent,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
+            roomBox->Add(actionButtons,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
+            roomBox->Add(recent,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
+            collabRoot->Add(roomBox,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,18);
 
-            collabRoot->Add(new wxStaticText(collabPage,wxID_ANY,"Room chat / line notes"),0,wxLEFT|wxRIGHT,16);
-            chatLog=new wxTextCtrl(collabPage,wxID_ANY,"",wxDefaultPosition,wxSize(500,120),wxTE_MULTILINE|wxTE_READONLY);
+            auto chatBox=new wxStaticBoxSizer(wxVERTICAL,collabPage,"Chat and line notes");
+            chatLog=new wxTextCtrl(collabPage,wxID_ANY,"",wxDefaultPosition,wxSize(-1,120),wxTE_MULTILINE|wxTE_READONLY);
             chatInput=new wxTextCtrl(collabPage,wxID_ANY,"",wxDefaultPosition,wxDefaultSize,wxTE_PROCESS_ENTER);
             auto chatButtons=new wxBoxSizer(wxHORIZONTAL);
-            chatSendButton=new wxButton(collabPage,wxID_ANY,"Send");
-            lineNoteButton=new wxButton(collabPage,wxID_ANY,"Send as line note");
+            chatSendButton=new wxButton(collabPage,wxID_ANY,"Send message");
+            lineNoteButton=new wxButton(collabPage,wxID_ANY,"Attach note to current line");
             chatButtons->Add(chatSendButton,1,wxRIGHT,8); chatButtons->Add(lineNoteButton,1);
-            collabRoot->Add(chatLog,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,16);
-            collabRoot->Add(chatInput,0,wxEXPAND|wxLEFT|wxRIGHT|wxTOP,8);
-            collabRoot->Add(chatButtons,0,wxEXPAND|wxALL,16);
+            chatBox->Add(chatLog,0,wxEXPAND|wxALL,10);
+            chatBox->Add(chatInput,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
+            chatBox->Add(chatButtons,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
+            collabRoot->Add(chatBox,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,18);
             collabPage->SetSizer(collabRoot);
-            tabs->AddPage(collabPage,"Collaborate",true);
+            tabs->AddPage(collabPage,"Room",true);
 
-            auto ytPage=new wxPanel(tabs);
+            // YouTube tools tab
+            auto ytPage=new wxScrolledWindow(tabs,wxID_ANY);
+            ytPage->SetScrollRate(0,12);
             auto ytRoot=new wxBoxSizer(wxVERTICAL);
-            auto ytTitle=new wxStaticText(ytPage,wxID_ANY,"YTSubConverter supported ASS features");
-            auto ytFont=ytTitle->GetFont(); ytFont.SetPointSize(ytFont.GetPointSize()+2); ytFont.SetWeight(wxFONTWEIGHT_BOLD); ytTitle->SetFont(ytFont);
-            ytRoot->Add(ytTitle,0,wxALL,12);
+            auto ytTitle=new wxStaticText(ytPage,wxID_ANY,"YouTube subtitle tools");
+            auto ytFont=ytTitle->GetFont(); ytFont.SetPointSize(ytFont.GetPointSize()+4); ytFont.SetWeight(wxFONTWEIGHT_BOLD); ytTitle->SetFont(ytFont);
+            ytRoot->Add(ytTitle,0,wxLEFT|wxRIGHT|wxTOP,18);
+            auto ytHint=new wxStaticText(ytPage,wxID_ANY,"Build YTSubConverter tags without memorizing syntax, scan the file, or export the current subtitles directly to YTT.");
+            ytHint->Wrap(680); ytRoot->Add(ytHint,0,wxLEFT|wxRIGHT|wxTOP|wxBOTTOM,18);
             ytCurrentStatus=new wxStaticText(ytPage,wxID_ANY,"Current line: not checked");
-            ytRoot->Add(ytCurrentStatus,0,wxLEFT|wxRIGHT|wxBOTTOM,12);
-            auto ytActions=new wxBoxSizer(wxHORIZONTAL);
+            ytRoot->Add(ytCurrentStatus,0,wxLEFT|wxRIGHT|wxBOTTOM,18);
+
+            auto exportBox=new wxStaticBoxSizer(wxVERTICAL,ytPage,"YTSubConverter");
+            auto exportRow=new wxBoxSizer(wxHORIZONTAL);
+            ytExportButton=new wxButton(ytPage,wxID_ANY,"Export current subtitles as .ytt");
+            ytConvertButton=new wxButton(ytPage,wxID_ANY,"Convert another subtitle file...");
+            exportRow->Add(ytExportButton,1,wxRIGHT,8); exportRow->Add(ytConvertButton,1);
+            exportBox->Add(exportRow,0,wxEXPAND|wxALL,10);
+            ytRoot->Add(exportBox,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,18);
+
+            auto tagBox=new wxStaticBoxSizer(wxVERTICAL,ytPage,"Apply tags to the current line");
+            auto tagHelp=new wxStaticText(ytPage,wxID_ANY,"Choose the tag, type your own value or arguments, then apply. No values are pre-filled.");
+            tagHelp->Wrap(650); tagBox->Add(tagHelp,0,wxEXPAND|wxALL,10);
+            auto tagRow=new wxFlexGridSizer(2,8,10); tagRow->AddGrowableCol(1,1);
+            tagRow->Add(new wxStaticText(ytPage,wxID_ANY,"Tag"),0,wxALIGN_CENTER_VERTICAL);
             ytTagChoice=new wxChoice(ytPage,wxID_ANY);
-            for(auto const* tag:{"\\b1","\\i1","\\u1","\\fnRoboto","\\fs30","\\1c&HFFFFFF&","\\alpha&H00&","\\pos(960,540)","\\an5","\\k20","\\fad(250,250)","\\move(100,100,500,500)","\\t(0,500,\\fs40)","\\ytsub","\\ytsup","\\ytsur","\\ytruby8","\\ytvert9","\\ytdir4","\\ytpack1","\\ytshake","\\ytchroma","\\ytktFade","\\ytktGlitch"}) ytTagChoice->Append(tag);
-            ytTagChoice->SetSelection(0);
-            ytInsertButton=new wxButton(ytPage,wxID_ANY,"Insert tag at cursor");
-            ytScanButton=new wxButton(ytPage,wxID_ANY,"Check YouTube compatibility");
-            ytActions->Add(ytTagChoice,1,wxRIGHT,8); ytActions->Add(ytInsertButton,0,wxRIGHT,8); ytActions->Add(ytScanButton,0);
-            ytRoot->Add(ytActions,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
-            ytScanOutput=new wxTextCtrl(ytPage,wxID_ANY,"",wxDefaultPosition,wxSize(-1,110),wxTE_MULTILINE|wxTE_READONLY);
-            ytRoot->Add(ytScanOutput,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
-            auto fontBox=new wxStaticBoxSizer(wxVERTICAL,ytPage,"Embedded YouTube font chart");
-            for(auto const& fontName:YTFonts()) {
-                auto sample=new wxStaticText(ytPage,wxID_ANY,Wx(fontName+" - AaBb 123"));
-                auto sf=sample->GetFont(); sf.SetFaceName(Wx(fontName)); sample->SetFont(sf); fontBox->Add(sample,0,wxBOTTOM,2);
-            }
-            ytRoot->Add(fontBox,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
-            auto reference=new wxTextCtrl(ytPage,wxID_ANY,wxString::FromUTF8(R"YTREF(YTSubConverter / YouTube ASS quick reference
+            for(auto const* tag:{"Choose a tag...","\\b","\\i","\\u","\\fn","\\fs","\\1a","\\2a","\\3a","\\4a","\\alpha","\\2c","\\pos","\\an","\\k","\\r","\\fad","\\fade","\\move","\\t","\\ytsub","\\ytsup","\\ytsur","\\ytruby","\\ytruby8","\\ytruby2","\\ytvert9","\\ytvert7","\\ytvert1","\\ytvert3","\\ytdir","\\ytpack","\\ytshake","\\ytchroma","\\ytktFade","\\ytktGlitch","\\ytkt","Custom"}) ytTagChoice->Append(tag);
+            ytTagChoice->SetSelection(0); tagRow->Add(ytTagChoice,1,wxEXPAND);
+            tagRow->Add(new wxStaticText(ytPage,wxID_ANY,"Value / arguments"),0,wxALIGN_CENTER_VERTICAL);
+            ytTagValue=new wxTextCtrl(ytPage,wxID_ANY,""); tagRow->Add(ytTagValue,1,wxEXPAND);
+            tagBox->Add(tagRow,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
+            ytInsertButton=new wxButton(ytPage,wxID_ANY,"Apply tag at subtitle cursor");
+            tagBox->Add(ytInsertButton,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
+            ytRoot->Add(tagBox,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,18);
 
-STYLE FEATURES
-- Font name: YouTube only accepts its supported font list. Unsupported fonts fall back to Roboto.
-- Font size: Default (or the first style) becomes YouTube's standard size. Other styles are relative to it.
-  Minimum effective size is 75%. Android ignores custom relative sizes.
-- Bold, italic, underline.
-- Primary, secondary, outline and shadow colors.
-- Alignment 1-9. Top aligned captions move down on hover, middle stay in place, bottom move up.
-- Outline thickness and shadow distance: YTSubConverter checks only whether each value is zero or greater than zero.
+            auto colorBox=new wxStaticBoxSizer(wxVERTICAL,ytPage,"YouTube colors");
+            auto colors=new wxFlexGridSizer(3,8,10); colors->AddGrowableCol(1,1);
+            auto textColorButton=new wxButton(ytPage,wxID_ANY,"Apply text color");
+            auto outlineColorButton=new wxButton(ytPage,wxID_ANY,"Apply outline color");
+            auto shadowColorButton=new wxButton(ytPage,wxID_ANY,"Apply shadow color");
+            colors->Add(new wxStaticText(ytPage,wxID_ANY,"Text"),0,wxALIGN_CENTER_VERTICAL); ytTextColor=new wxColourPickerCtrl(ytPage,wxID_ANY,*wxWHITE); colors->Add(ytTextColor,1,wxEXPAND); colors->Add(textColorButton);
+            colors->Add(new wxStaticText(ytPage,wxID_ANY,"Outline"),0,wxALIGN_CENTER_VERTICAL); ytOutlineColor=new wxColourPickerCtrl(ytPage,wxID_ANY,*wxBLACK); colors->Add(ytOutlineColor,1,wxEXPAND); colors->Add(outlineColorButton);
+            colors->Add(new wxStaticText(ytPage,wxID_ANY,"Shadow"),0,wxALIGN_CENTER_VERTICAL); ytShadowColor=new wxColourPickerCtrl(ytPage,wxID_ANY,*wxBLACK); colors->Add(ytShadowColor,1,wxEXPAND); colors->Add(shadowColorButton);
+            colorBox->Add(colors,0,wxEXPAND|wxALL,10);
+            ytRoot->Add(colorBox,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,18);
 
-SUPPORTED OVERRIDE TAGS
-{\\b} / {\\i} / {\\u} - bold / italic / underline
-{\\fnFont Name} - font (unsupported names fall back to Roboto)
-{\\fs30} - relative font size
-{\\c&H...&} or {\\1c&H...&} - primary text color
-{\\2c&H...&} - unsung karaoke color
-{\\3c&H...&} - outline color
-{\\4c&H...&} - shadow color
-{\\1a&H...&} - text alpha
-{\\2a&H...&} - unsung karaoke alpha; fully transparent enables native YouTube karaoke hiding
-{\\3a&H...&} - background alpha
-{\\4a&H...&} - shadow alpha (limited by YouTube; works with &H222222& and matching text alpha)
-{\\alpha&H...&} - set all alpha values
-{\\pos(x,y)} - position
-{\\an1} ... {\\an9} - alignment
-{\\kN} - karaoke segment duration
-{\\r} / {\\rStyle} - reset formatting
-{\\fad(in,out)} - simple fade; outline/shadow fade is limited unless color is &H222222&
-{\\fade(...)} - complex fade with the same outline/shadow limitation
-{\\move(x1,y1,x2,y2)} - move
-{\\t(...)} - animate colors, alpha and font size
+            auto scanBox=new wxStaticBoxSizer(wxVERTICAL,ytPage,"Compatibility");
+            ytScanButton=new wxButton(ytPage,wxID_ANY,"Scan current subtitles for YouTube issues");
+            ytScanOutput=new wxTextCtrl(ytPage,wxID_ANY,"",wxDefaultPosition,wxSize(-1,130),wxTE_MULTILINE|wxTE_READONLY);
+            scanBox->Add(ytScanButton,0,wxEXPAND|wxALL,10); scanBox->Add(ytScanOutput,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,10);
+            ytRoot->Add(scanBox,0,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,18);
+            ytPage->SetSizer(ytRoot);
+            tabs->AddPage(ytPage,"YouTube Tools",false);
+
+            // Reference tab stays intentionally read-only.
+            auto refPage=new wxPanel(tabs);
+            auto refRoot=new wxBoxSizer(wxVERTICAL);
+            auto reference=new wxTextCtrl(refPage,wxID_ANY,wxString::FromUTF8(R"YTREF(YTSubConverter quick reference
+
+STANDARD TAGS
+\\b / \\i / \\u          bold / italic / underline
+\\fn                     font name
+\\fs                     font size
+\\1c / \\2c / \\3c / \\4c text, karaoke, outline, shadow colors
+\\1a / \\2a / \\3a / \\4a alpha channels
+\\alpha                  all alpha channels
+\\pos(x,y)               position
+\\an1 ... \\an9         alignment
+\\k                      karaoke duration
+\\r                      reset formatting
+\\fad / \\fade          fades
+\\move                   movement
+\\t                      animation
 
 YOUTUBE-SPECIFIC TAGS
-{\\ytsub} - subscript (PC only)
-{\\ytsup} - superscript (PC only)
-{\\ytsur} - return to regular script
-{\\ytruby} - ruby text. Syntax uses [base/reading] pairs, for example [kanji/kana].
-{\\ytruby8} - ruby above (default); {\\ytruby2} - ruby below. PC only; mobile shows parenthesized reading.
-{\\ytvert9} - vertical columns right-to-left (PC only)
-{\\ytvert7} - vertical columns left-to-right (PC only)
-{\\ytvert1} - rotate subtitle 90 degrees counter-clockwise (PC only)
-{\\ytvert3} - rotate and invert line order (PC only)
-{\\ytdir4} - force right-to-left inside a left-to-right subtitle language
-{\\ytpack1} / {\\ytpack0} - start/stop full-width-character packing in vertical text (PC only)
+\\ytsub / \\ytsup / \\ytsur
+\\ytruby / \\ytruby8 / \\ytruby2
+\\ytvert9 / \\ytvert7 / \\ytvert1 / \\ytvert3
+\\ytdir4
+\\ytpack1 / \\ytpack0
+\\ytshake(...)
+\\ytchroma(...)
+\\ytktFade
+\\ytktGlitch
+\\ytkt(...)
 
-YT SHAKE
-{\\ytshake} - 20 px radius for the whole line
-{\\ytshake(radius)}
-{\\ytshake(radiusX,radiusY)}
-{\\ytshake(radius,t1,t2)}
-{\\ytshake(radiusX,radiusY,t1,t2)}
+NOTES
+- Unsupported fonts fall back to Roboto.
+- Some ruby, vertical, packing, subscript and superscript behavior is PC-only or has a mobile fallback.
+- Fully transparent secondary karaoke alpha enables native YouTube karaoke hiding.
+- Outline/shadow behavior on YouTube is more limited than full ASS rendering.
+- The compatibility scanner flags unsupported tags and known mobile caveats.
 
-YT CHROMA
-{\\ytchroma} - default RGB chromatic entrance/exit
-{\\ytchroma(intime,outtime)}
-{\\ytchroma(offsetX,offsetY,intime,outtime)}
-{\\ytchroma(color1,color2,...,alpha,offsetX,offsetY,intime,outtime)}
-
-ADVANCED KARAOKE
-{\\ytktFade} - fading karaoke (can generate very large files and lag on some devices)
-{\\ytktGlitch} - randomized glitch karaoke for Latin/CJK/Korean text
-{\\ytkt(Cursor,text)} - cursor after the active word
-{\\ytkt(Cursor,formatting tags,text)} - formatted cursor
-{\\ytkt(Cursor,interval,tags1,text1,tags2,text2,...)} - animated cursor
-{\\ytkt(LCursor,text)} - cursor before the active word; formatting/animation variants also apply
-
-Anything not listed above is not supported by YTSubConverter and will not have an effect on YouTube.
-
-Font chart:
-https://github.com/arcusmaximus/YTSubConverter/blob/master/images/fonts.png
-
-YTSubConverter:
-https://github.com/arcusmaximus/YTSubConverter
-)YTREF"),
-                wxDefaultPosition,wxSize(660,520),wxTE_MULTILINE|wxTE_READONLY|wxTE_RICH2);
+The Windows portable build includes the official YTSubConverter tool for direct .ytt export.
+)YTREF"),wxDefaultPosition,wxDefaultSize,wxTE_MULTILINE|wxTE_READONLY|wxTE_RICH2);
             auto mono=reference->GetFont(); mono.SetFamily(wxFONTFAMILY_TELETYPE); reference->SetFont(mono);
-            ytRoot->Add(reference,1,wxEXPAND|wxLEFT|wxRIGHT|wxBOTTOM,12);
-            ytPage->SetSizer(ytRoot);
-            tabs->AddPage(ytPage,"YTSub Reference",false);
+            refRoot->Add(reference,1,wxEXPAND|wxALL,12); refPage->SetSizer(refRoot);
+            tabs->AddPage(refPage,"Reference",false);
 
-            root->Add(tabs,1,wxEXPAND|wxALL,6);
-            window->SetSizerAndFit(root); window->SetMinSize(wxSize(560,620)); window->CentreOnParent();
+            root->Add(tabs,1,wxEXPAND|wxALL,8);
+            window->SetSizer(root); window->SetMinSize(wxSize(650,600)); window->SetSize(wxSize(760,760)); window->CentreOnParent();
             window->Bind(wxEVT_CLOSE_WINDOW,&Impl::OnClose,this);
             hostButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Guard([this]{Start(true);});});
             joinButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {Guard([this]{Start(false);});});
@@ -761,6 +772,11 @@ https://github.com/arcusmaximus/YTSubConverter
             chatInput->Bind(wxEVT_TEXT_ENTER,[this](wxCommandEvent&) {SendChat(false);});
             ytInsertButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {InsertYTTag();});
             ytScanButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {ScanYT();});
+            ytExportButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {ExportYTT();});
+            ytConvertButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {ConvertYTFile();});
+            textColorButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {ApplyYTColor(1,ytTextColor);});
+            outlineColorButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {ApplyYTColor(3,ytOutlineColor);});
+            shadowColorButton->Bind(wxEVT_BUTTON,[this](wxCommandEvent&) {ApplyYTColor(4,ytShadowColor);});
             UpdateYTCurrentLine();
             Buttons();
         }
