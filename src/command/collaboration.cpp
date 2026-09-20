@@ -5,7 +5,7 @@
 namespace {
 struct session final : cmd::Command {
     CMD_NAME("collab/session")
-    STR_MENU("&Collaborate…")
+    STR_MENU("&Collaborate...")
     STR_DISP("Collaborate")
     STR_HELP("Host or join a live subtitle editing room")
     void operator()(agi::Context* c) override {
