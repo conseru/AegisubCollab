@@ -26,7 +26,7 @@ function Copy-ToDirectory {
 
 # Keep in sync with the number of Write-Step calls below.
 $script:stepNum = 0
-$script:stepTotal = 13
+$script:stepTotal = 14
 
 # Report progress both via an interactive bar and a textual trail for CI logs.
 function Write-Step {
