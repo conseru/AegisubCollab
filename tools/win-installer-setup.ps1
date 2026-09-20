@@ -30,6 +30,23 @@ if (Test-Path 'Env:GITHUB_TOKEN') {
 	$GitHeaders = @{ 'Authorization' = 'Bearer ' + $Env:GITHUB_TOKEN }
 }
 
+# YTSubConverter (MIT licensed)
+$YTSubDir = Join-Path $DepsDir "YTSubConverter"
+$YTSubExe = Join-Path $YTSubDir "YTSubConverter.exe"
+$YTSubLicense = Join-Path $YTSubDir "LICENSE.txt"
+New-Item -ItemType Directory -Path $YTSubDir -Force | Out-Null
+if (!(Test-Path -LiteralPath $YTSubExe)) {
+	try {
+		Invoke-WebRequest "https://github.com/arcusmaximus/YTSubConverter/releases/download/1.6.6/YTSubConverter.exe" -OutFile $YTSubExe -UseBasicParsing
+	}
+	catch {
+		throw "Could not download YTSubConverter.exe required for direct YTT export: $($_.Exception.Message)"
+	}
+}
+if (!(Test-Path -LiteralPath $YTSubLicense)) {
+	Invoke-WebRequest "https://raw.githubusercontent.com/arcusmaximus/YTSubConverter/master/LICENSE" -OutFile $YTSubLicense -UseBasicParsing
+}
+
 # DependencyControl
 $DepCtrlDir = Join-Path $DepsDir "DependencyControl"
 
