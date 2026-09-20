@@ -17,14 +17,18 @@
 #include "text_selection_controller.h"
 #include "video_controller.h"
 #include <libaegisub/fs.h>
+#include <libaegisub/path.h>
 #include <libaegisub/vfr.h>
 #include <wx/button.h>
 #include <wx/checkbox.h>
 #include <wx/choice.h>
+#include <wx/clrpicker.h>
 #include <wx/dialog.h>
+#include <wx/filedlg.h>
 #include <wx/msgdlg.h>
 #include <wx/notebook.h>
 #include <wx/panel.h>
+#include <wx/scrolwin.h>
 #include <wx/filename.h>
 #include <wx/msgdlg.h>
 #include <wx/sizer.h>
@@ -33,6 +37,7 @@
 #include <wx/stdpaths.h>
 #include <wx/textctrl.h>
 #include <wx/timer.h>
+#include <wx/utils.h>
 #include <wx/weakref.h>
 #include <algorithm>
 #include <cctype>
@@ -79,6 +84,15 @@ std::string SafeMediaFilename(std::string const& source,std::string const& hash)
     }
     if (clean.empty() || clean=="." || clean=="..") clean="video.bin";
     return "shared-" + hash.substr(0,8) + "-" + clean;
+}
+std::string AssColor(wxColour const& color) {
+    char out[16];
+    std::snprintf(out,sizeof out,"&H%02X%02X%02X&",color.Blue(),color.Green(),color.Red());
+    return out;
+}
+wxString QuoteCommandArg(wxString value) {
+    value.Replace(""","\\"");
+    return """ + value + """;
 }
 std::string HumanBytes(uint64_t bytes) {
     char out[64];
@@ -187,9 +201,10 @@ struct CollaborationController::Impl : wxEvtHandler {
     wxWeakRef<wxDialog> window;
     wxTextCtrl *nameBox=nullptr,*addressBox=nullptr,*passwordBox=nullptr,*chatLog=nullptr,*chatInput=nullptr;
     wxStaticText *status=nullptr,*people=nullptr,*recent=nullptr,*ytCurrentStatus=nullptr;
-    wxTextCtrl *ytScanOutput=nullptr;
+    wxTextCtrl *ytScanOutput=nullptr,*ytTagValue=nullptr;
     wxChoice *ytTagChoice=nullptr;
-    wxButton *ytInsertButton=nullptr,*ytScanButton=nullptr;
+    wxColourPickerCtrl *ytTextColor=nullptr,*ytOutlineColor=nullptr,*ytShadowColor=nullptr;
+    wxButton *ytInsertButton=nullptr,*ytScanButton=nullptr,*ytExportButton=nullptr,*ytConvertButton=nullptr;
     wxButton *hostButton=nullptr,*joinButton=nullptr,*leaveButton=nullptr,*undoMineButton=nullptr,*chatSendButton=nullptr,*lineNoteButton=nullptr,*cancelMediaButton=nullptr,*transferHostButton=nullptr;
     wxCheckBox *autoMediaBox=nullptr;
     wxChoice *followChoice=nullptr,*roleChoice=nullptr;
@@ -397,11 +412,106 @@ struct CollaborationController::Impl : wxEvtHandler {
         ytCurrentStatus->SetLabel(warnings.empty()?"Current line: YouTube compatible":"Current line: "+std::to_string(warnings.size())+" YouTube warning(s)");
         if(window) window->Layout();
     }
-    void InsertYTTag() {
-        if(!ytTagChoice || ytTagChoice->GetSelection()==wxNOT_FOUND) return;
-        auto tag=Utf8(ytTagChoice->GetStringSelection());
+    void InsertOverride(std::string const& tag) {
+        if(tag.empty()) return;
         c->textSelectionController->ReplaceSelection("{"+tag+"}");
-        Notice("Inserted "+tag+" at the subtitle cursor.");
+        Notice("Applied "+tag+" to the current subtitle.");
+    }
+    void InsertYTTag() {
+        if(!ytTagChoice || ytTagChoice->GetSelection()<=0) {
+            Notice("Choose a YouTube/ASS tag first.");
+            return;
+        }
+        auto tag=Utf8(ytTagChoice->GetStringSelection());
+        auto value=ytTagValue?Utf8(ytTagValue->GetValue().Strip(wxString::both)):std::string();
+        static std::set<std::string> const parenTags={"\\pos","\\fad","\\fade","\\move","\\t","\\ytshake","\\ytchroma","\\ytkt"};
+        static std::set<std::string> const valueTags={"\\b","\\i","\\u","\\fn","\\fs","\\alpha","\\an","\\k","\\r","\\ytdir","\\ytpack","\\ytvert"};
+        std::string built=tag;
+        if(parenTags.count(tag)) {
+            if(value.empty() && tag!="\\ytshake" && tag!="\\ytchroma") {Notice("Enter the values for "+tag+" first."); return;}
+            if(!value.empty()) built+="("+value+")";
+        }
+        else if(valueTags.count(tag)) {
+            if(value.empty() && tag!="\\r") {Notice("Enter a value for "+tag+" first."); return;}
+            built+=value;
+        }
+        else if(tag=="Custom") {
+            if(value.empty()) {Notice("Enter a custom tag first."); return;}
+            built=value[0]=='\\'?value:"\\"+value;
+        }
+        InsertOverride(built);
+    }
+    void ApplyYTColor(int channel,wxColourPickerCtrl* picker) {
+        if(!picker) return;
+        InsertOverride("\\"+std::to_string(channel)+"c"+AssColor(picker->GetColour()));
+    }
+    agi::fs::path YTSubConverterPath() const {
+        for(auto const& candidate:{
+            c->path->Decode("?data/YTSubConverter.exe"),
+            c->path->Decode("?data/YTSubConverter/YTSubConverter.exe")
+        }) if(agi::fs::FileExists(candidate)) return candidate;
+        return {};
+    }
+    bool RunYTSubConverter(agi::fs::path const& input,agi::fs::path const& output) {
+#ifdef __WXMSW__
+        auto exe=YTSubConverterPath();
+        if(exe.empty()) {
+            wxMessageBox("YTSubConverter.exe is not installed with this build. Create the portable package again or place YTSubConverter.exe next to aegisub.exe.",
+                         "YTSubConverter",wxOK|wxICON_ERROR,c->parent);
+            return false;
+        }
+        wxString command=QuoteCommandArg(wxString(exe.wstring()))+" "+QuoteCommandArg(wxString(input.wstring()))+" "+QuoteCommandArg(wxString(output.wstring()));
+        long result=wxExecute(command,wxEXEC_SYNC);
+        if(result!=0) {
+            wxMessageBox("YTSubConverter could not convert this subtitle file. Check the YT compatibility scan for unsupported data.",
+                         "YTSubConverter",wxOK|wxICON_ERROR,c->parent);
+            return false;
+        }
+        return agi::fs::FileExists(output);
+#else
+        wxMessageBox("Bundled YTSubConverter integration is currently available in the Windows build.","YTSubConverter",wxOK|wxICON_INFORMATION,c->parent);
+        return false;
+#endif
+    }
+    void ExportYTT() {
+        wxFileDialog save(c->parent,"Export YouTube Timed Text","","","YouTube Timed Text (*.ytt)|*.ytt",
+                          wxFD_SAVE|wxFD_OVERWRITE_PROMPT);
+        if(save.ShowModal()!=wxID_OK) return;
+        agi::fs::path output(from_wx(save.GetPath()));
+        if(output.extension().empty()) output.replace_extension(".ytt");
+        auto tempDir=agi::fs::path(from_wx(wxStandardPaths::Get().GetTempDir()));
+        auto input=tempDir/agi::fs::path("aegisub-ytsub-"+NewId()+".ass");
+        try {
+            AssSubtitleFormat().ExportFile(c->ass.get(),input,c->project->Timecodes(),"UTF-8");
+            bool ok=RunYTSubConverter(input,output);
+            try {agi::fs::Remove(input);} catch(...) {}
+            if(ok) {
+                Notice("Exported YouTube YTT: "+output.filename().string());
+                if(c->frame) c->frame->StatusTimeout("Exported YTT: "+wxString(output.wstring()),8000);
+            }
+        }
+        catch(std::exception const& e) {
+            try {agi::fs::Remove(input);} catch(...) {}
+            wxMessageBox(Wx(std::string("Could not export YTT: ")+e.what()),"YTSubConverter",wxOK|wxICON_ERROR,c->parent);
+        }
+    }
+    void ConvertYTFile() {
+        wxFileDialog open(c->parent,"Convert subtitle with YTSubConverter","","",
+            "Subtitle files (*.ass;*.ytt;*.srv3;*.srt;*.sbv)|*.ass;*.ytt;*.srv3;*.srt;*.sbv|All files (*.*)|*.*",wxFD_OPEN|wxFD_FILE_MUST_EXIST);
+        if(open.ShowModal()!=wxID_OK) return;
+        wxFileDialog save(c->parent,"Choose converted subtitle","","",
+            "YouTube Timed Text (*.ytt)|*.ytt|YouTube SRV3 (*.srv3)|*.srv3|Advanced SubStation Alpha (*.ass)|*.ass|SubRip (*.srt)|*.srt|YouTube SBV (*.sbv)|*.sbv",
+            wxFD_SAVE|wxFD_OVERWRITE_PROMPT);
+        if(save.ShowModal()!=wxID_OK) return;
+        agi::fs::path input(from_wx(open.GetPath())),output(from_wx(save.GetPath()));
+        if(output.extension().empty()) {
+            static char const* ext[]={".ytt",".srv3",".ass",".srt",".sbv"};
+            output.replace_extension(ext[std::min<int>(save.GetFilterIndex(),4)]);
+        }
+        if(RunYTSubConverter(input,output)) {
+            Notice("Converted subtitle: "+output.filename().string());
+            if(c->frame) c->frame->StatusTimeout("YTSubConverter finished: "+wxString(output.wstring()),8000);
+        }
     }
     void ScanYT() {
         if(!ytScanOutput) return;
