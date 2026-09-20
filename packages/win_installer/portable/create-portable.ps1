@@ -26,7 +26,7 @@ function Copy-ToDirectory {
 
 # Keep in sync with the number of Write-Step calls below.
 $script:stepNum = 0
-$script:stepTotal = 12
+$script:stepTotal = 13
 
 # Report progress both via an interactive bar and a textual trail for CI logs.
 function Write-Step {
@@ -95,6 +95,24 @@ if (!(Test-Path -LiteralPath $RedistPath)) {
     catch { Write-Warning "Could not download the VC++ runtime; continuing without bundling it." }
 }
 
+# YTSubConverter (MIT licensed)
+$YTSubDir = Join-Path $InstallerDepsDir "YTSubConverter"
+$YTSubExe = Join-Path $YTSubDir "YTSubConverter.exe"
+$YTSubLicense = Join-Path $YTSubDir "LICENSE.txt"
+New-Item -ItemType Directory -Path $YTSubDir -Force | Out-Null
+if (!(Test-Path -LiteralPath $YTSubExe)) {
+    try {
+        Invoke-WebRequest "https://github.com/arcusmaximus/YTSubConverter/releases/download/1.6.6/YTSubConverter.exe" -OutFile $YTSubExe -UseBasicParsing
+    }
+    catch { Write-Warning "Could not download YTSubConverter; direct YTT export will be unavailable in this portable package." }
+}
+if (!(Test-Path -LiteralPath $YTSubLicense)) {
+    try {
+        Invoke-WebRequest "https://raw.githubusercontent.com/arcusmaximus/YTSubConverter/master/LICENSE" -OutFile $YTSubLicense -UseBasicParsing
+    }
+    catch { Write-Warning "Could not download the YTSubConverter license file." }
+}
+
 # DependencyControl
 $DepCtrlDir = Join-Path $InstallerDepsDir "DependencyControl"
 $DepCtrlMarker = Join-Path $DepCtrlDir "automation\include\l0\DependencyControl.moon"
@@ -158,6 +176,16 @@ if (Test-Path -LiteralPath $DepCtrlAutomation) {
 
 Write-Step 'Copying portable config'
 Copy-ToDirectory $SourceRoot\packages\win_installer\portable\config.json  $PortableOutputDir
+
+Write-Step 'Copying YTSubConverter'
+if (Test-Path -LiteralPath $YTSubExe) {
+    Copy-ToDirectory $YTSubExe $PortableOutputDir
+    if (Test-Path -LiteralPath $YTSubLicense) {
+        Copy-ToDirectory $YTSubLicense (Join-Path $PortableOutputDir "licenses")
+    }
+} else {
+    Write-Host "YTSubConverter unavailable; skipping bundled converter."
+}
 
 Write-Step 'Creating portable zip'
 Remove-Item -LiteralPath $PortableZipPath -Force -ErrorAction SilentlyContinue
