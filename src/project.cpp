@@ -326,6 +326,9 @@ bool Project::DoLoadVideo(agi::fs::path const& path) {
 		return false;
 	}
 
+	// Set the path before announcing the provider so listeners (including
+	// collaboration media sharing) always see the newly opened video.
+	SetPath(video_file, "?video", "Video", path);
 	AnnounceVideoProviderModified(video_provider.get());
 
 	UpdateVideoProperties(context->ass.get(), video_provider.get(), context->parent);
@@ -336,7 +339,6 @@ bool Project::DoLoadVideo(agi::fs::path const& path) {
 
 	timecodes_file.clear();
 	keyframes_file.clear();
-	SetPath(video_file, "?video", "Video", path);
 
 	std::string warning = video_provider->GetWarning();
 	if (!warning.empty())
