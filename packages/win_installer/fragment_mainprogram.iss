@@ -19,12 +19,13 @@ Name: "translations"; Description: "Aegisub Translations"; Types: full basic
 
 [Tasks]
 Name: "startmenuicon"; Description: "{cm:StartMenuIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "checkforupdates"; Description: "{cm:CheckForUpdates}"; GroupDescription: "{cm:UpdatesGroup}"
 
 [Files]
 ; main
 DestDir: {app}; Source: "{#BUILD_ROOT}\aegisub.exe"; Flags: ignoreversion; Components: main
 DestDir: {app}; Source: "{#INSTALLER_DIR}\license.txt"; Flags: ignoreversion; Components: main
+DestDir: {app}; Source: "{#DEPS_DIR}\YTSubConverter\YTSubConverter.exe"; Flags: ignoreversion; Components: main
+DestDir: {app}\licenses; Source: "{#DEPS_DIR}\YTSubConverter\LICENSE.txt"; DestName: "YTSubConverter-LICENSE.txt"; Flags: ignoreversion; Components: main
 
 [Icons]
 Name: {commonprograms}\Aegisub; Filename: {app}\aegisub.exe; WorkingDir: {app}; IconIndex: 0; Tasks: startmenuicon; Comment: Create and edit subtitle files
