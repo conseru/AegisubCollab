@@ -25,7 +25,7 @@ int main() {
         Check(server.WaitForAccept(3),"accept timeout");
         SocketPeer host(server.Accept(false));
         Check(client->WaitOnConnect(3),"connect timeout");
-        Writer hello; hello.String("hello"); hello.Number(6); hello.String("字幕 editor"); hello.String("test password"); hello.String("Editor");
+        Writer hello; hello.String("hello"); hello.Number(7); hello.String("字幕 editor"); hello.String("test password"); hello.String("Editor");
         guest.Queue(hello); guest.Flush(); Check(Receive(host)==hello.Bytes(),"hello round trip");
         Document doc; Line line{std::string(32,'a'),{"0","0","0","1000","Default","[by Jake]","0","0","0","","こんにちは {\\i1}world"}};
         doc.lines.push_back(line); doc.settings={{"PlayResX","1920"},{"PlayResY","1080"}};
