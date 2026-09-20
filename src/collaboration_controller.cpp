@@ -426,7 +426,7 @@ struct CollaborationController::Impl : wxEvtHandler {
         auto tag=Utf8(ytTagChoice->GetStringSelection());
         auto value=ytTagValue?Utf8(ytTagValue->GetValue().Strip(wxString::both)):std::string();
         static std::set<std::string> const parenTags={"\\pos","\\fad","\\fade","\\move","\\t","\\ytshake","\\ytchroma","\\ytkt"};
-        static std::set<std::string> const valueTags={"\\b","\\i","\\u","\\fn","\\fs","\\alpha","\\an","\\k","\\r","\\ytdir","\\ytpack","\\ytvert"};
+        static std::set<std::string> const valueTags={"\\b","\\i","\\u","\\fn","\\fs","\\1a","\\2a","\\3a","\\4a","\\alpha","\\2c","\\an","\\k","\\r","\\ytdir","\\ytpack"};
         std::string built=tag;
         if(parenTags.count(tag)) {
             if(value.empty() && tag!="\\ytshake" && tag!="\\ytchroma") {Notice("Enter the values for "+tag+" first."); return;}
