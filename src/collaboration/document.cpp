@@ -10,6 +10,13 @@ template<class T> T Choose(T const& b, T const& l, T const& r, std::string const
     if (r == b || l == r) return l;
     throw Conflict("Both editors changed " + label + ". Local edits are kept; resolve the conflict before reconnecting.");
 }
+template<class T> T ChooseLatestLine(T const& b, T const& l, T const& r) {
+    if (l == b) return r;
+    if (r == b || l == r) return l;
+    // Concurrent edits to the same subtitle field are resolved by the newest
+    // update received by the room instead of disconnecting an editor.
+    return l;
+}
 using Map = std::map<std::string, std::string>;
 Map MergeMap(Map const& b, Map const& l, Map const& r, std::string const& label) {
     Map result;
@@ -86,9 +93,9 @@ Document Merge(Document const& base, Document const& local, Document const& remo
             continue;
         }
         Line x=old;
-        for (size_t i=0;i<11;++i) x.fields[i]=Choose(old.fields[i],l.at(id).fields[i],r.at(id).fields[i],"line " + std::to_string(rank[id]));
+        for (size_t i=0;i<11;++i) x.fields[i]=ChooseLatestLine(old.fields[i],l.at(id).fields[i],r.at(id).fields[i]);
         auto pair=[](Line const& a){return std::make_pair(a.fields[2],a.fields[3]);};
-        auto timing=Choose(pair(old),pair(l.at(id)),pair(r.at(id)),"timing on line " + std::to_string(rank[id]));
+        auto timing=ChooseLatestLine(pair(old),pair(l.at(id)),pair(r.at(id)));
         x.fields[2]=timing.first; x.fields[3]=timing.second;
         x.fields[11]=Choose(old.fields[11],l.at(id).fields[11],r.at(id).fields[11],"author on line " + std::to_string(rank[id]));
         bool local_changed=false, remote_changed=false;
@@ -98,7 +105,7 @@ Document Merge(Document const& base, Document const& local, Document const& remo
         }
         if(local_changed) x.fields[12]=l.at(id).fields[12];
         else if(remote_changed) x.fields[12]=r.at(id).fields[12];
-        else x.fields[12]=Choose(old.fields[12],l.at(id).fields[12],r.at(id).fields[12],"last editor on line " + std::to_string(rank[id]));
+        else x.fields[12]=ChooseLatestLine(old.fields[12],l.at(id).fields[12],r.at(id).fields[12]);
         result.emplace(id,std::move(x));
     }
     for (auto const& kv:r) if (!b.count(kv.first)) result.emplace(kv);
