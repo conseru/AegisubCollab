@@ -24,6 +24,7 @@
 
 #include <boost/algorithm/string/replace.hpp>
 #include <lauxlib.h>
+#include <string_view>
 
 namespace agi::lua {
 	bool LoadFile(lua_State *L, agi::fs::path const& raw_filename) {
