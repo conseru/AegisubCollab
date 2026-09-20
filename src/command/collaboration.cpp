@@ -14,4 +14,6 @@ struct session final : cmd::Command {
     }
 };
 }
-namespace cmd { void init_collaboration() {reg(std::make_unique<session>());} }
+namespace cmd { void init_collaboration() {reg(std::make_unique<session>());
+        reg(std::make_unique<export_ytt>());
+        reg(std::make_unique<convert_ytsub>());} }
