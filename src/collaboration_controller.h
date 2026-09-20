@@ -14,6 +14,8 @@ public:
     explicit CollaborationController(agi::Context*);
     ~CollaborationController();
     void Show();
+    void ExportYTT();
+    void ConvertYTFile();
     std::string AuthorFor(AssDialogue const*) const;
     std::string LastEditorFor(AssDialogue const*) const;
     std::string PresenceFor(AssDialogue const*) const;
