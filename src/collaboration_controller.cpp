@@ -1359,6 +1359,8 @@ The Windows portable build includes the official YTSubConverter tool for direct 
 CollaborationController::CollaborationController(agi::Context* c):impl(std::make_unique<Impl>(c)) {}
 CollaborationController::~CollaborationController()=default;
 void CollaborationController::Show() {impl->Show();}
+void CollaborationController::ExportYTT() {impl->ExportYTT();}
+void CollaborationController::ConvertYTFile() {impl->ConvertYTFile();}
 std::string CollaborationController::AuthorFor(AssDialogue const* line) const {
     return line?Extra(impl->c->ass.get(),*line,AuthorKey):std::string();
 }
