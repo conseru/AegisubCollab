@@ -9,6 +9,7 @@
 #include "ass_info.h"
 #include "ass_style.h"
 #include "base_grid.h"
+#include "compat.h"
 #include "frame_main.h"
 #include "selection_controller.h"
 #include "project.h"
