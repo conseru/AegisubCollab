@@ -17,6 +17,7 @@
 #include "libaegisub/lua/script_reader.h"
 
 #include "libaegisub/file_mapping.h"
+#include "libaegisub/charset_conv.h"
 #include "libaegisub/log.h"
 #include "libaegisub/lua/utils.h"
 #include "libaegisub/split.h"
@@ -37,11 +38,48 @@ namespace agi::lua {
 		agi::read_file_mapping file(filename);
 		auto buff = file.read();
 		auto size = static_cast<size_t>(file.size());
+		std::string converted;
 
-		// Discard the BOM if present
-		if (size >= 3 && buff[0] == -17 && buff[1] == -69 && buff[2] == -65) {
-			buff += 3;
-			size -= 3;
+		// Automation source files are text, but many older Windows scripts were
+		// saved as UTF-16 or Windows-1252 despite being labelled/assumed UTF-8.
+		// Normalize those files before handing them to Lua. Compiled Lua bytecode
+		// is left untouched.
+		if (size >= 2 && static_cast<unsigned char>(buff[0]) == 0xFF && static_cast<unsigned char>(buff[1]) == 0xFE) {
+			agi::charset::IconvWrapper conv("UTF-16LE", "UTF-8", false);
+			converted = conv.Convert(std::string_view(buff + 2, size - 2));
+			buff = converted.data();
+			size = converted.size();
+		}
+		else if (size >= 2 && static_cast<unsigned char>(buff[0]) == 0xFE && static_cast<unsigned char>(buff[1]) == 0xFF) {
+			agi::charset::IconvWrapper conv("UTF-16BE", "UTF-8", false);
+			converted = conv.Convert(std::string_view(buff + 2, size - 2));
+			buff = converted.data();
+			size = converted.size();
+		}
+		else {
+			// Discard a UTF-8 BOM if present.
+			if (size >= 3 && static_cast<unsigned char>(buff[0]) == 0xEF && static_cast<unsigned char>(buff[1]) == 0xBB && static_cast<unsigned char>(buff[2]) == 0xBF) {
+				buff += 3;
+				size -= 3;
+			}
+
+			// LuaJIT bytecode starts with ESC and must never be transcoded.
+			if (size && static_cast<unsigned char>(buff[0]) != 0x1B) {
+				try {
+					agi::charset::IconvWrapper validate("UTF-8", "UTF-8", false);
+					converted = validate.Convert(std::string_view(buff, size));
+				}
+				catch (agi::charset::ConversionFailure const&) {
+					// Be forgiving with legacy Automation scripts authored in
+					// Windows editors which silently saved ANSI/CP1252.
+					agi::charset::IconvWrapper legacy("WINDOWS-1252", "UTF-8", true);
+					converted = legacy.Convert(std::string_view(buff, size));
+				}
+				if (!converted.empty() || size == 0) {
+					buff = converted.data();
+					size = converted.size();
+				}
+			}
 		}
 
 		if (!agi::fs::HasExtension(filename, "moon"))
